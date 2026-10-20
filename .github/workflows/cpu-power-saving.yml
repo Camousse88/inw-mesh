@@ -29,13 +29,15 @@ jobs:
           pip install platformio cryptography
           pio run -e t-lora-pager
       - name: Record the source revision
-        run: git rev-parse HEAD > .pio/build/t-lora-pager/source-commit.txt
+        run: |
+          git rev-parse HEAD > .pio/build/t-lora-pager/source-commit.txt
+          cp .pio/build/t-lora-pager/firmware.bin .pio/build/t-lora-pager/SquatchMesh-1.2.14-cpu-test2-Pager.bin
       - uses: actions/upload-artifact@v4
         with:
-          name: pager-cpu-power-saving-${{ github.sha }}
+          name: pager-cpu-test2-${{ github.sha }}
           if-no-files-found: error
           path: |
-            .pio/build/t-lora-pager/firmware.bin
+            .pio/build/t-lora-pager/SquatchMesh-1.2.14-cpu-test2-Pager.bin
             .pio/build/t-lora-pager/bootloader.bin
             .pio/build/t-lora-pager/partitions.bin
             .pio/build/t-lora-pager/source-commit.txt
