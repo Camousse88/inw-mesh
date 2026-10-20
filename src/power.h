@@ -19,6 +19,13 @@ namespace power {
   bool saver();
   void setSaver(bool on);         // manual; turning it off keeps it off until the next low battery
 
+  // Independent CPU saver: does not disable GPS, BLE or Wi-Fi. Opt-in, saved
+  // in its own NVS key so the existing settings blob remains compatible.
+  bool cpuSaving();
+  bool setCpuSaving(bool on);     // false if the preference could not be saved
+  void updateCpu(bool idle);      // loop task only; false restores the boot clock
+  uint32_t cpuClockMhz();
+
   // Optimised charging
   bool holding();                 // paused at 80% right now
   void chargeFullNow();           // release the hold for this charge

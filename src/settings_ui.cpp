@@ -998,6 +998,12 @@ static void batteryMenu() {
     markUiDirty(); });
   m->info("status", []() -> String { return String(power::chargeStatus()); });
   m->action("charge to 100% now", [] { power::chargeFullNow(); nav.toast("charging to full this time"); });
+  m->header("CPU power saving");
+  m->toggle("CPU power saving", [] { return power::cpuSaving(); }, [] {
+    if (!power::setCpuSaving(!power::cpuSaving())) nav.toast("could not save CPU setting");
+  });
+  m->info("CPU clock", []() -> String { return String(power::cpuClockMhz()) + " MHz"; });
+  m->info("CPU saver does", []() -> String { return String("80 MHz with screen off; radios stay on"); });
   m->header("battery saver");
   m->toggle("battery saver", [] { return power::saver(); }, [] { power::setSaver(!power::saver()); });
   m->toggle("turn on automatically", [] { return ui_settings.autoSaver; },

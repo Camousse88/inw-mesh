@@ -405,6 +405,7 @@ static uint32_t s_panelAt = 0;   // millis of the last Sleep In or Sleep Out sen
 // it showed rainbow static, mostly when a message woke the screen: the light came on
 // first and the panel was told to wake after.
 static void panelWake() {
+  power::updateCpu(false);         // full speed before panel I/O and wake rendering
   if (!s_panelOff) return;
   const uint32_t since = millis() - s_panelAt;
   if (since < 120) delay(120 - since);
@@ -750,6 +751,7 @@ static void takeScreenshot() {
 //   key C       press a key (\n for enter)
 //   home, lock, wheel +N / -N, press
 //   ext         what is plugged into the top header, and what IO9 is doing
+//   cpu         CPU saver state and actual clock (does not wake the screen)
 //   dfu         restart into the ROM's USB download mode, ready for esptool or
 //               the web installer (flash with --before no_reset)
 
@@ -858,6 +860,11 @@ static void usbCommands() {
       Serial.printf("[status] fw=%s radio=%s radio_ok=%d contacts=%d\n",
                     FW_VERSION, radio_chip, s_radioOk ? 1 : 0,
                     g_node ? g_node->getNumContacts() : -1);
+      continue;
+    }
+    if (!strcmp(line, "cpu")) {
+      Serial.printf("[cpu] saving=%d clock=%lu MHz screen=%s\n", power::cpuSaving() ? 1 : 0,
+                    (unsigned long)power::cpuClockMhz(), dimmer.asleep() ? "off" : "on");
       continue;
     }
     // The browser installer sends this before it resets the pager, so nothing
@@ -2221,5 +2228,9 @@ void loop() {
   // the screen dark. The radio holds a received packet until it's read, so 30 ms
   // loses nothing and the CPU idles in between. A connected phone keeps the fast
   // pace so syncing stays quick.
+  // Wait until the panel and its backlight are fully off. Audio and overlays
+  // retain the normal clock; LoRa reception and BLE/Wi-Fi remain enabled.
+  power::updateCpu(dimmer.asleep() && s_panelOff && backlight.level() == 0 &&
+                   !jingle.playing() && !nav.overlayActive());
   delay(dimmer.asleep() && !jingle.playing() && !bleConnected() ? 30 : 2);
 }
