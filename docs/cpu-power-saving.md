@@ -36,6 +36,21 @@ official OTA URL or signing keys, so an official update can replace the test bui
 
 ## On-device checks (required before an upstream PR)
 
+### MeshCore web flasher / Custom Firmware
+
+Use **SquatchMesh-1.2.14-cpu-test2-Pager-merged.bin**, not the application-only
+file, for a full install. The merged image includes the 16 MB bootloader,
+partition table, blank OTA-selection data (selecting app0), and the application.
+It also covers NVS with blank bytes: back up settings and identity first.
+The flasher recognises the `-merged.bin` suffix, writes it at 0x0 and automatically
+selects a full erase with a warning. This wipes on-device identity, contacts,
+settings and messages; export/SD backup is required if they need to be kept.
+An application-only image at 0x10000 does not switch a device booting app1 to
+app0, and cannot boot an erased device. Never erase when flashing an app-only file.
+Check Settings > System > version for `1.2.14-cpu-test2` after installing.
+
+### Hardware validation
+
 1. With the setting off, check normal operation and the normal CPU clock.
 2. Enable it, turn the screen off and wait at least two seconds. The serial log
    should show `[power] CPU 80 MHz`. Wake with the side button; it should show

@@ -32,12 +32,14 @@ jobs:
         run: |
           git rev-parse HEAD > .pio/build/t-lora-pager/source-commit.txt
           cp .pio/build/t-lora-pager/firmware.bin .pio/build/t-lora-pager/SquatchMesh-1.2.14-cpu-test2-Pager.bin
+          python tools/merge_pager_firmware.py .pio/build/t-lora-pager .pio/build/t-lora-pager/SquatchMesh-1.2.14-cpu-test2-Pager-merged.bin
       - uses: actions/upload-artifact@v4
         with:
           name: pager-cpu-test2-${{ github.sha }}
           if-no-files-found: error
           path: |
             .pio/build/t-lora-pager/SquatchMesh-1.2.14-cpu-test2-Pager.bin
+            .pio/build/t-lora-pager/SquatchMesh-1.2.14-cpu-test2-Pager-merged.bin
             .pio/build/t-lora-pager/bootloader.bin
             .pio/build/t-lora-pager/partitions.bin
             .pio/build/t-lora-pager/source-commit.txt
