@@ -2042,7 +2042,10 @@ void loop() {
   // Any input means someone is there (the man-down alarm's clock), even keys
   // pressed with the screen off.
   if (detents || press || anyKey || btnDown) motion::noteActivity();
-  const bool raised = motion::takeRaise();       // taken every pass, so it can't go stale
+  // Consume old raises even on the first dark loop, before motion::tick()
+  // observes the screen transition. Saving must never wake from a stale gesture.
+  const bool raised = motion::takeRaise() &&
+    !(dimmer.asleep() && power::lightSleep() && power::cpuSaving());
 
   if (dimmer.asleep()) {
     // Screen off: only the side button wakes it, or lifting the pager into view.
