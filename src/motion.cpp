@@ -26,7 +26,9 @@ uint32_t kickedAt = 0;
 // host awake. The loaded sensor firmware stays resident for a short alert read.
 bool screenPaused = false, pauseFailed = false, darkSaving = false;
 const char* pauseStatus = "off";
-bool alertReading = false, alertStable = false;
+bool alertReading = false, alertFaceDown = false;
+uint32_t alertReadMs = 0;
+const char* alertStatus = "not checked";
 uint8_t alertSamples = 0;
 float alertX = 0, alertY = 0, alertZ = 0;
 
@@ -92,11 +94,15 @@ void sample(const Vec& a) {
   if (alertReading) {
     const float norm = dot(a, a);
     const float dx = a.x - alertX, dy = a.y - alertY, dz = a.z - alertZ;
-    if (norm < 0.85f * 0.85f || norm > 1.15f * 1.15f ||
-        (alertSamples && dx * dx + dy * dy + dz * dz > 0.08f * 0.08f)) alertStable = false;
+    const bool valid = norm >= 0.85f * 0.85f && norm <= 1.15f * 1.15f;
+    alertFaceDown = valid && unit(a).z * SCREEN_Z <= -0.8660254f;
+    // Startup samples may be zero, unsettled or belong to an old orientation.
+    // Require a NEW consecutive stable run; one bad sample must not poison all
+    // later valid samples in the same read. Never reuse a cached quiet result.
+    if (!valid) alertSamples = 0;
+    else if (alertSamples && dx * dx + dy * dy + dz * dz > 0.08f * 0.08f) alertSamples = 1;
+    else if (alertSamples < 3) ++alertSamples;
     alertX = a.x; alertY = a.y; alertZ = a.z;
-    ++alertSamples;
-    if (unit(a).z * SCREEN_Z > -0.8660254f) alertStable = false;
   }
   if (now - lastSample > 3000) movedAt = now;    // after a gap, count stillness afresh
   lastSample = now;
@@ -218,8 +224,13 @@ void stream(bool on) {
   if (on) {
     // The corrected accelerometer, or the raw one if this image lacks it.
     for (uint8_t id : {(uint8_t)BoschSensorID::ACCEL_CORRECTED, (uint8_t)BoschSensorID::ACCEL_PASSTHROUGH}) {
-      imu.onResultEvent(id, onAccel);
-      if (imu.configure(id, RATE_HZ, 0)) { sensorId = id; streaming = true; break; }
+      if (!imu.onResultEvent(id, onAccel)) continue;
+      if (imu.configure(id, RATE_HZ, 0)) {
+        sensorId = id;
+        streaming = true;
+        failed = false; // a successful restart recovers a transient prior failure
+        break;
+      }
       imu.removeResultEvent(id, onAccel);
     }
     if (!streaming) {
@@ -342,16 +353,25 @@ void refreshForAlert() {
   face = faceTiming = false;
   screenPaused = false;
   stream(true);
-  if (!streaming) { screenPaused = true; pauseStatus = "alert read failed"; return; }
+  if (!streaming) {
+    screenPaused = true;
+    pauseStatus = "alert read failed; retry next message";
+    alertStatus = "sensor resume failed";
+    alertReadMs = 0;
+    return;
+  }
   alertSamples = 0;
-  alertStable = true;
+  alertFaceDown = false;
   alertReading = true;
   const uint32_t start = millis();
-  // Three fresh 25 Hz readings, bounded to 180 ms, at the current 80 MHz.
-  // Stability here is local to this short read, not a claim of 2 s immobility.
-  while (alertSamples < 3 && millis() - start < 180) { imu.update(); delay(5); }
+  // A cold sensor restart can exceed 180 ms. Finish as soon as three consecutive
+  // stable readings arrive; allow at most 500 ms including settling.
+  // This runs only for an alert, at 80 MHz while dark, never on a motion IRQ.
+  while (alertSamples < 3 && millis() - start < 500) { imu.update(); delay(5); }
+  alertReadMs = millis() - start;
   alertReading = false;
-  const bool quiet = alertSamples >= 3 && alertStable;
+  const bool quiet = alertSamples >= 3 && alertFaceDown;
+  alertStatus = quiet ? "fresh face down" : alertSamples >= 3 ? "fresh other orientation" : "no stable reading";
   if (!pauseSampling()) pauseStatus = "sample stop failed; polling";
   face = faceTiming = quiet;
   faceSince = millis() - 2001;
@@ -422,7 +442,8 @@ bool lean(float& x, float& y) {
 }
 
 void debugPrint() {
-  Serial.printf("[motion] sleep=%s motion_wake=off\r\n", sleepState());
+  Serial.printf("[motion] sleep=%s motion_wake=off alert=%s read_ms=%lu\r\n",
+                sleepState(), alertStatus, (unsigned long)alertReadMs);
   Serial.printf("[motion] %s  g %.3f %.3f %.3f  tilt %.0f  shake %.3f  jitter %.3f  held %lus  still %lus  face %d  raise %d hold %d quiet %d mandown %u\r\n",
                 state(), lp.x, lp.y, lp.z, tilt, shake, jitter, (unsigned long)(heldFor() / 1000),
                 (unsigned long)(stillFor() / 1000), face, raiseOn, holdOn, quietOn, manMin);

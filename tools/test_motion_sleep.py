@@ -61,6 +61,9 @@ inline bhy2_data_xyz pose{0,0,4096};
 inline void bhy2_parse_xyz(const uint8_t* p,bhy2_data_xyz* v) { std::memcpy(v,p,sizeof(*v)); }
 inline bool tiltSupported=true,sigSupported=true,rejectEvents=false,rejectStop=false,rejectResume=false,stuckIrq=false;
 inline bool deliverSamples=true;
+inline bool restartArtifacts=false;
+inline unsigned starts=0, rawUpdates=0;
+inline uint32_t rawStarted=0;
 inline float rates[256]={};
 using Callback=void(*)(uint8_t,const uint8_t*,uint32_t,uint64_t*,void*);
 inline Callback callbacks[256]={};
@@ -95,7 +98,10 @@ public:
     if (rejectResume && (id==4||id==1) && rate>0) return false;
     if (rejectEvents && (id==48||id==55) && rate>0) return false;
     rates[id]=rate;
-    if (id==4||id==1) lastRaw=millis();
+    if (id==4||id==1) {
+      lastRaw=millis();
+      if (rate>0) { ++starts; rawUpdates=0; rawStarted=millis(); }
+    }
     return true;
   }
   uint8_t getInterruptRegisterValue() { return interruptMask; }
@@ -109,7 +115,12 @@ public:
     }
     imuLevel=stuckIrq ? 1 : 0;
     if (deliverSamples && rates[4]>0 && callbacks[4] && millis()-lastRaw>=40) {
-      lastRaw=millis(); callbacks[4](4,reinterpret_cast<const uint8_t*>(&pose),sizeof(pose),nullptr,nullptr);
+      // A restart may need >180 ms and produce invalid initial readings.
+      if (restartArtifacts && starts>=4 && millis()-rawStarted<240) return;
+      lastRaw=millis();
+      bhy2_data_xyz value=pose;
+      if (restartArtifacts && starts>=4 && rawUpdates++<2) value={0,0,0};
+      callbacks[4](4,reinterpret_cast<const uint8_t*>(&value),sizeof(value),nullptr,nullptr);
     }
   }
 };
@@ -154,19 +165,30 @@ int main(int argc,char** argv) {
     assert(callbacks[48]==nullptr && callbacks[55]==nullptr);
   }
   motion::setQuietFaceDown(true); motion::tick(true);
+  // Repeated messages with no screen wake: first warm read then slow cold
+  // restarts with invalid initial samples. Never cache the previous orientation.
+  restartArtifacts=true; pose={0,0,-4096};
+  for(int i=0;i<12;++i) {
+    fakeNow+=30000; motion::tick(true);
+    motion::refreshForAlert();
+    assert(motion::faceDown());
+    assert(!motion::needsFastPolling() && !motion::irqWatch() && rates[4]==0);
+  }
+  pose={0,0,4096}; motion::refreshForAlert(); assert(!motion::faceDown());
+  restartArtifacts=false;
   // Fresh pose, including one never observed before sleeping, controls quiet.
   for(int i=0;i<6;++i) {
     pose={0,0,int16_t(i%2?4096:-4096)};
     const uint32_t start=millis();
     motion::refreshForAlert();
-    assert(millis()-start<=180 && motion::faceDown()==(i%2==0));
+    assert(millis()-start<=500 && motion::faceDown()==(i%2==0));
     assert(!motion::needsFastPolling() && rates[4]==0 && !motion::takeRaise());
   }
   // Large acceleration while face down is not treated as lying still.
   pose={0,0,-6000}; motion::refreshForAlert(); assert(!motion::faceDown());
   deliverSamples=false;
   const uint32_t timeoutStart=millis(); motion::refreshForAlert();
-  assert(millis()-timeoutStart==180 && !motion::faceDown() && rates[4]==0);
+  assert(millis()-timeoutStart==500 && !motion::faceDown() && rates[4]==0);
   deliverSamples=true;
   // A failed stop after an alert must prevent unsafe long sleep.
   rejectStop=true; motion::refreshForAlert();
@@ -177,7 +199,9 @@ int main(int argc,char** argv) {
   pose={0,0,-4096}; motion::refreshForAlert(); assert(motion::faceDown());
   rejectResume=true; motion::refreshForAlert();
   assert(!motion::faceDown() && !motion::takeRaise() && !motion::irqWatch());
-  rejectResume=false; motion::setQuietFaceDown(true); motion::tick(true);
+  // The next message must recover without toggling a setting or rebooting.
+  rejectResume=false; motion::refreshForAlert();
+  assert(motion::faceDown() && rates[4]==0 && !motion::needsFastPolling());
   // Screen wake and disabling either CPU option restore normal sampling.
   motion::tick(false); assert(rates[4]==25 && motion::needsFastPolling());
   frames(1); assert(rates[4]==0);

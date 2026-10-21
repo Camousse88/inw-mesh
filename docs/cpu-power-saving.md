@@ -42,7 +42,7 @@ official OTA URL or signing keys, so an official update can replace the test bui
 
 ### MeshCore web flasher / Custom Firmware
 
-Use **SquatchMesh-1.2.14-cpu-test8-Pager-merged.bin**, not the application-only
+Use **SquatchMesh-1.2.14-cpu-test9-Pager-merged.bin**, not the application-only
 file, for a full install. The merged image includes the 16 MB bootloader,
 partition table, blank OTA-selection data (selecting app0), and the application.
 It also covers NVS with blank bytes: back up settings and identity first.
@@ -51,7 +51,7 @@ selects a full erase with a warning. This wipes on-device identity, contacts,
 settings and messages; export/SD backup is required if they need to be kept.
 An application-only image at 0x10000 does not switch a device booting app1 to
 app0, and cannot boot an erased device. Never erase when flashing an app-only file.
-Check Settings > System > version for `1.2.14-cpu-test8` after installing.
+Check Settings > System > version for `1.2.14-cpu-test9` after installing.
 
 ### Hardware validation
 
@@ -79,7 +79,7 @@ Check Settings > System > version for `1.2.14-cpu-test8` after installing.
 Test3: CPU status/log lines use CRLF for compatibility with the MeshCore web
 console. The `cpu` command no longer needs a following `themes` command.
 
-## Test8: CPU sleep until an event or scheduled work (experimental)
+## Test9: CPU sleep until an event or scheduled work (experimental)
 
 Settings > Battery > **CPU light sleep** is a separate opt-in, persisted in
 `inw-cpu/light` (also absent from exported UI backups). Enable **CPU power
@@ -112,7 +112,7 @@ press have no sleep wake source and do not inhibit sleep if held. On subsequent
 radio/timer/button wake, the original loop drains and ignores their buffered
 input while dark. CPU timer/radio wakes do not themselves light the screen.
 
-Test8 replaces test7's motion IRQ watch with a strict screen-off pause.
+Test8 introduced the following screen-off policy, retained in test9. It replaces test7's motion IRQ watch with a strict screen-off pause.
 With both CPU options ON and the logical screen OFF, raw accelerometer sampling
 is stopped immediately, without waiting for immobility. The configured ODR must
 read back as zero; failure falls back to polling and visibly blocks long sleep.
@@ -128,14 +128,31 @@ Stay-on-held only samples while the screen is on in this mode.
 
 `quiet when face down` remains available without motion wakes. Immediately
 before deciding notification sound/light, the paused accelerometer takes three
-fresh 25 Hz samples, bounded to 180 ms at 80 MHz, and stops again immediately.
-Silence requires all three readings to point screen-down within 30 degrees,
-acceleration magnitude between 0.85 and 1.15 g, and successive vector changes
-no greater than 0.08 g. A failed/timeout read or moving/non-face-down pose permits
-sound instead of retaining stale silence. This short local stability check
-replaces the normal path's two-second qualification while asleep; it cannot
-prove that the Pager was stationary before the message arrived. No cached
-orientation is trusted. The read itself never raises the screen.
+consecutive fresh, valid and stable 25 Hz samples, then stops immediately.
+A cold restart is allowed up to 500 ms, including settling; normal reads stop as
+soon as the three samples arrive. Invalid startup samples reset the streak,
+not the whole alert result. Silence requires a stable orientation screen-down
+within 30 degrees, acceleration magnitude between 0.85 and 1.15 g, and successive
+vector changes no greater than 0.08 g. A stable face-up reading completes just as
+quickly and permits sound. A failed/timeout read permits sound rather than using
+stale orientation. The sensor is retried on the next message and successful
+resume clears a previous transient error. The read never raises the screen.
+
+Test9 fixes two weaknesses in test8's alert read: a single invalid startup sample
+latched rejection for the whole read, and its 180 ms limit could expire before
+three samples arrived after a cold restart. A successful subsequent resume also
+failed to clear the sensor failure flag. The regression simulation reproduces a
+quiet first message followed by failed reads when later restarts take 240 ms and
+start with zero samples. Twelve successive face-down alerts now stay quiet;
+turning face-up permits sound, and the next message recovers from a transient
+resume error without reboot or setting changes. This simulates a mechanism
+consistent with the observed symptom; hardware traces are still needed to
+confirm the precise restart behavior on the user's sensor.
+
+The short local stability check replaces the normal path's two-second
+qualification while asleep; it cannot prove the Pager was stationary before
+the message arrived. No cached orientation is trusted. USB `cpu`/`motion` now
+includes the last alert result and read duration for hardware diagnosis.
 
 **Man-down remains on the original continuous-polling path.** Enabling this
 alarm blocks long sleep, as Battery's `man-down uses polling` status explains.
