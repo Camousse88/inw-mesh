@@ -405,7 +405,6 @@ static uint32_t s_panelAt = 0;   // millis of the last Sleep In or Sleep Out sen
 // it showed rainbow static, mostly when a message woke the screen: the light came on
 // first and the panel was told to wake after.
 static void panelWake() {
-  power::updateCpu(false);         // full speed before panel I/O and wake rendering
   if (!s_panelOff) return;
   const uint32_t since = millis() - s_panelAt;
   if (since < 120) delay(120 - since);
@@ -535,6 +534,7 @@ bool app::animationsOk() { return s_uiReady && !dimmer.asleep() && !s_panelOff; 
 // The side button waking the screen: the theme's turn-on animation, revealing
 // whatever is on top (usually the lock screen), then back to normal drawing.
 static void screenWakeAnimated() {
+  dimmer.wake();                    // logical wake restores the CPU before rendering
   panelWake();
   nav.cancelTransition();                        // the wake animation is the transition
   nav.tick();                                    // let the top view catch up (the clock, say)
@@ -863,7 +863,7 @@ static void usbCommands() {
       continue;
     }
     if (!strcmp(line, "cpu")) {
-      Serial.printf("[cpu] saving=%d clock=%lu MHz screen=%s\n", power::cpuSaving() ? 1 : 0,
+      Serial.printf("[cpu] saving=%d clock=%lu MHz screen=%s\r\n", power::cpuSaving() ? 1 : 0,
                     (unsigned long)power::cpuClockMhz(), dimmer.asleep() ? "off" : "on");
       continue;
     }
@@ -1776,6 +1776,7 @@ void setup() {
   bootAnimStart();
   backlight.begin(PIN_TFT_BL);
   dimmer.begin(&backlight, ui_settings.brightness, 3, ui_settings.dimSecs * 1000UL, ui_settings.sleepSecs * 1000UL);
+  dimmer.onScreenState(power::updateCpu);
 
   bootStep("power rails", railsOk);
   haptic.begin(Wire);
@@ -2228,9 +2229,8 @@ void loop() {
   // the screen dark. The radio holds a received packet until it's read, so 30 ms
   // loses nothing and the CPU idles in between. A connected phone keeps the fast
   // pace so syncing stays quick.
-  // Wait until the panel and its backlight are fully off. Audio and overlays
-  // retain the normal clock; LoRa reception and BLE/Wi-Fi remain enabled.
-  power::updateCpu(dimmer.asleep() && s_panelOff && backlight.level() == 0 &&
-                   !jingle.playing() && !nav.overlayActive());
+  // Screen state is the only CPU policy input. Notifications, sound and radio
+  // work all stay at 80 MHz while the screen is off, when saving is enabled.
+  power::updateCpu(dimmer.asleep());
   delay(dimmer.asleep() && !jingle.playing() && !bleConnected() ? 30 : 2);
 }

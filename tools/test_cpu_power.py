@@ -15,6 +15,11 @@ FILES = {
 #include <cstddef>
 struct SerialMock { template<class... T> void printf(const char*, T...) {} };
 inline SerialMock Serial;
+inline uint32_t fakeMillis=0;
+inline uint32_t millis() { return fakeMillis; }
+constexpr uint8_t HIGH=1, LOW=0, OUTPUT=1;
+inline void pinMode(uint8_t, uint8_t) {}
+inline void digitalWrite(uint8_t, uint8_t) {}
 """,
     "Preferences.h": """#pragma once
 #include <cstddef>
@@ -39,6 +44,7 @@ inline bool setCpuFrequencyMhz(uint32_t v) { ++changes; if(reject) return false;
 #include <Preferences.h>
 #include <esp32-hal-cpu.h>
 #include "power.h"
+#include "backlight.h"
 int main(int argc, char** argv) {
 clockMhz=argc>1 ? std::atoi(argv[1]) : 240;
 const auto original=clockMhz;
@@ -61,6 +67,21 @@ assert(!power::setCpuSaving(false) && power::cpuSaving());
 writable=true;
 assert(power::setCpuSaving(false) && !stored && clockMhz==original);
 power::updateCpu(true); assert(clockMhz==original);
+// Test real screen-state transitions, including timers and message-style wake.
+Backlight light; light.begin(42);
+IdleDimmer dimmer; dimmer.begin(&light, 12, 3, 100, 200);
+dimmer.onScreenState(power::updateCpu);
+assert(power::setCpuSaving(true));
+dimmer.sleepInstant(); assert(clockMhz==80);
+// Repeated background passes do not change frequency while logically asleep.
+for (int i=0; i<20; ++i) { power::updateCpu(dimmer.asleep()); assert(clockMhz==80); }
+dimmer.wake(); assert(clockMhz==original && !dimmer.asleep());
+dimmer.sleepNow(); assert(clockMhz==80);
+dimmer.wakeInstant(); assert(clockMhz==original);
+fakeMillis=101; dimmer.tick(); assert(dimmer.dimmed() && clockMhz==original);
+fakeMillis=201; dimmer.tick(); assert(dimmer.asleep() && clockMhz==80);
+assert(power::setCpuSaving(false)); assert(clockMhz==original);
+dimmer.wakeInstant(); dimmer.sleepInstant(); assert(clockMhz==original);
 }
 """,
 }

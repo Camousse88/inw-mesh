@@ -23,7 +23,7 @@ namespace power {
   // in its own NVS key so the existing settings blob remains compatible.
   bool cpuSaving();
   bool setCpuSaving(bool on);     // false if the preference could not be saved
-  void updateCpu(bool idle);      // loop task only; false restores the boot clock
+  void updateCpu(bool screenOff); // screen state only; false restores the boot clock
   uint32_t cpuClockMhz();
 
   // Optimised charging

@@ -6,9 +6,10 @@ enabling it does not change GPS, Bluetooth, Wi-Fi, radio settings or loop delays
 The existing UI settings blob is unchanged, including its backup format.
 The new CPU preference is not part of exported UI settings backups.
 
-Once the screen, panel and backlight are off, the CPU switches to 80 MHz.
-The clock captured at boot is restored before waking the panel, during audio
-playback or an active UI overlay, and when the setting is disabled. Clock changes
+When the logical screen state is off, the CPU switches to 80 MHz immediately,
+including during notification banners, audio playback, mesh RX/TX, GPS updates
+and background storage work. The clock captured at boot is restored at logical
+screen wake, before the panel/wake animation, or when the setting is disabled. Clock changes
 use Arduino's `setCpuFrequencyMhz`; failed requests are reported over USB serial.
 There is no ESP light sleep or deep sleep in this feature. LoRa stays in RX.
 
@@ -38,7 +39,7 @@ official OTA URL or signing keys, so an official update can replace the test bui
 
 ### MeshCore web flasher / Custom Firmware
 
-Use **SquatchMesh-1.2.14-cpu-test2-Pager-merged.bin**, not the application-only
+Use **SquatchMesh-1.2.14-cpu-test3-Pager-merged.bin**, not the application-only
 file, for a full install. The merged image includes the 16 MB bootloader,
 partition table, blank OTA-selection data (selecting app0), and the application.
 It also covers NVS with blank bytes: back up settings and identity first.
@@ -47,7 +48,7 @@ selects a full erase with a warning. This wipes on-device identity, contacts,
 settings and messages; export/SD backup is required if they need to be kept.
 An application-only image at 0x10000 does not switch a device booting app1 to
 app0, and cannot boot an erased device. Never erase when flashing an app-only file.
-Check Settings > System > version for `1.2.14-cpu-test2` after installing.
+Check Settings > System > version for `1.2.14-cpu-test3` after installing.
 
 ### Hardware validation
 
@@ -61,8 +62,9 @@ Check Settings > System > version for `1.2.14-cpu-test2` after installing.
 3. Send and receive direct/channel messages with the screen off. Check delivery
    acknowledgements, retries and queued messages. Repeat with a phone connected
    over BLE and Wi-Fi enabled, including a contact sync.
-4. Play a notification with the screen off, check the sound and the return to
-   80 MHz when done. Check the map, SD backup, USB console and update checks.
+4. Play notifications with screen wake disabled: the CPU must remain at 80 MHz
+   during the banner and sound, not just after they finish. Check for audio gaps.
+   Send/receive messages and exercise background storage while it stays dark. Check the map, SD backup, USB console and update checks.
 5. Disable the setting and reboot; it must remain off. Enable and reboot; it
    must remain on and downclock only after the screen goes dark.
 6. Compare average battery current with the setting off/on under identical
@@ -70,3 +72,6 @@ Check Settings > System > version for `1.2.14-cpu-test2` after installing.
    measurements or a controlled long discharge; USB input current while charging
    is not a measurement of battery discharge. Check that no resets or extra
    message losses appear. No power or reliability claims are made before this.
+
+Test3: CPU status/log lines use CRLF for compatibility with the MeshCore web
+console. The `cpu` command no longer needs a following `themes` command.
