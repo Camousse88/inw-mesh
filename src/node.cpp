@@ -1,6 +1,8 @@
 #include "node.h"
 #include "history.h"
 #include <SPIFFS.h>
+#include <esp_bt.h>
+#include <esp_bt_main.h>
 #include <esp_heap_caps.h>
 #include <new>
 #include <array>
@@ -876,6 +878,31 @@ void nodeLoop() {
 }
 
 bool bleEnabled()   { return g_ifaces.isBluetoothEnabled(); }
-void bleSetEnabled(bool on) { if (on) g_ifaces.enableBluetooth(); else g_ifaces.disableBluetooth(); }
+// The normal Bluetooth toggle only stops services/advertising. Manual light
+// sleep also needs the idle host/controller stopped. Keep BLE allocations and
+// bonds, and resume the same stack when the user enables Bluetooth again.
+bool blePrepareLightSleep() {
+  if (bleEnabled() || bleConnected()) return false;
+  if (esp_bluedroid_get_status() == ESP_BLUEDROID_STATUS_ENABLED &&
+      esp_bluedroid_disable() != ESP_OK) return false;
+  if (esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_ENABLED &&
+      esp_bt_controller_disable() != ESP_OK) {
+    esp_bluedroid_enable();
+    return false;
+  }
+  return esp_bt_controller_get_status() != ESP_BT_CONTROLLER_STATUS_ENABLED;
+}
+void bleSetEnabled(bool on) {
+  if (!on) { g_ifaces.disableBluetooth(); return; }
+  if (esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_INITED &&
+      esp_bt_controller_enable(ESP_BT_MODE_BLE) != ESP_OK) {
+    Serial.println("[power] Bluetooth controller resume failed"); return;
+  }
+  if (esp_bluedroid_get_status() == ESP_BLUEDROID_STATUS_INITIALIZED &&
+      esp_bluedroid_enable() != ESP_OK) {
+    Serial.println("[power] Bluetooth host resume failed"); return;
+  }
+  g_ifaces.enableBluetooth();
+}
 bool bleConnected() { return g_ifaces.isConnected(); }
 uint32_t blePin()   { return g_node ? g_node->getBLEPin() : 0; }

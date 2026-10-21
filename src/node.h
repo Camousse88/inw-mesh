@@ -249,4 +249,5 @@ void nodeLoop();
 bool bleEnabled();
 void bleSetEnabled(bool on);
 bool bleConnected();
+bool blePrepareLightSleep(); // only when Bluetooth is OFF; resume before next enable
 uint32_t blePin();

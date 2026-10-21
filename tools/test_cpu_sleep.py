@@ -1,0 +1,138 @@
+#!/usr/bin/env python3
+"""Exercise actual manual sleep policy with fake IDF calls (not hardware QA)."""
+from pathlib import Path
+import subprocess
+import tempfile
+
+ROOT = Path(__file__).resolve().parents[1]
+FILES = {
+    'Arduino.h': r'''#pragma once
+#include <cstdint>
+#include <cstddef>
+inline uint32_t now=0, yields=0;
+inline uint32_t millis() { return now; }
+inline void delay(uint32_t) { ++yields; }
+constexpr int HIGH=1, LOW=0;
+inline int radioLevel=0, buttonLevel=1, wheelPress=1, wheelA=1, wheelB=1;
+inline int digitalRead(int pin) { return pin==14 ? radioLevel : pin==0 ? buttonLevel : pin==7 ? wheelPress : pin==40 ? wheelA : wheelB; }
+struct SerialMock { template<class... T> void printf(const char*, T...) {} };
+inline SerialMock Serial;
+using portMUX_TYPE=int;
+#define portMUX_INITIALIZER_UNLOCKED 0
+#define portENTER_CRITICAL(x) (++*(x))
+#define portEXIT_CRITICAL(x) (--*(x))
+''',
+    'Preferences.h': r'''#pragma once
+#include <cstddef>
+inline bool stored=false, writable=true, shortWrite=false;
+class Preferences { public:
+bool begin(const char*, bool ro) { return ro || writable; }
+bool getBool(const char*, bool fallback) { return stored ? true : fallback; }
+size_t putBool(const char*, bool value) { if(shortWrite) return 0; stored=value; return 1; }
+void end() {}
+};
+''',
+    'esp_sleep.h': r'''#pragma once
+#include <cstdint>
+using esp_err_t=int;
+constexpr int ESP_OK=0, ESP_SLEEP_WAKEUP_GPIO=7, ESP_SLEEP_WAKEUP_TIMER=4;
+inline int calls=0, result=0, configResult=0, enabledSources=0;
+inline uint64_t timerUs=0;
+inline int64_t clockUs=0;
+inline int esp_sleep_enable_timer_wakeup(uint64_t us) { timerUs=us; enabledSources|=1; return configResult; }
+inline int esp_sleep_enable_gpio_wakeup() { enabledSources|=2; return 0; }
+inline int esp_light_sleep_start() { ++calls; clockUs+=30000; return result; }
+inline int esp_sleep_get_wakeup_cause() { return ESP_SLEEP_WAKEUP_TIMER; }
+inline void esp_sleep_disable_wakeup_source(int s) { enabledSources &= s==ESP_SLEEP_WAKEUP_TIMER ? ~1 : ~2; }
+''',
+    'esp_timer.h': r'''#pragma once
+#include <esp_sleep.h>
+inline int64_t esp_timer_get_time() { return clockUs; }
+''',
+    'driver/gpio.h': r'''#pragma once
+#include <esp_sleep.h>
+using gpio_num_t=int;
+constexpr int GPIO_INTR_DISABLE=0, GPIO_INTR_POSEDGE=1, GPIO_INTR_HIGH_LEVEL=4, GPIO_INTR_LOW_LEVEL=5;
+inline int intr[49]={};
+inline bool wakes[49]={};
+inline int gpio_wakeup_enable(int pin, int trigger) { wakes[pin]=true; intr[pin]=trigger; return 0; }
+inline void gpio_wakeup_disable(int pin) { wakes[pin]=false; }
+inline void gpio_set_intr_type(int pin, int trigger) { intr[pin]=trigger; }
+''',
+    'test.cpp': r'''#include <cassert>
+#include <Preferences.h>
+#include <esp_sleep.h>
+#include <driver/gpio.h>
+#include "power.h"
+#include "cpu_sleep.h"
+namespace power {
+  bool saving=true;
+  uint32_t mhz=80;
+  bool cpuSaving() { return saving; }
+  void updateCpu(bool) {}
+  uint32_t cpuClockMhz() { return mhz; }
+}
+int main() {
+  using namespace power;
+  SleepInputs idle{true,false,false,false,false,false,false,true};
+  assert(!lightSleep()); assert(!idleLightSleep(idle) && calls==0);
+  writable=false; assert(!setLightSleep(true) && !lightSleep());
+  writable=true; shortWrite=true; assert(!setLightSleep(true) && !lightSleep());
+  shortWrite=false; assert(setLightSleep(true) && lightSleep());
+  assert(!idleLightSleep(idle) && calls==0); // grace period
+  now=120000;
+  saving=false; assert(!idleLightSleep(idle)); saving=true;
+  // Each unsafe input independently blocks sleep.
+  for(int i=0;i<8;++i) {
+    auto blocked=idle;
+    switch(i) {
+      case 0: blocked.screenOff=false; break;
+      case 1: blocked.audio=true; break;
+      case 2: blocked.usb=true; break;
+      case 3: blocked.bluetooth=true; break;
+      case 4: blocked.wifi=true; break;
+      case 5: blocked.gps=true; break;
+      case 6: blocked.meshBusy=true; break;
+      case 7: blocked.radioReady=false; break;
+    }
+    assert(!idleLightSleep(blocked) && calls==0);
+  }
+  radioLevel=1; assert(!idleLightSleep(idle)); radioLevel=0;
+  buttonLevel=0; assert(!idleLightSleep(idle)); buttonLevel=1;
+  wheelPress=0; assert(!idleLightSleep(idle)); wheelPress=1;
+  mhz=240; assert(!idleLightSleep(idle)); mhz=80;
+  assert(idleLightSleep(idle));
+  assert(calls==1 && yields==1 && timerUs==30000);
+  assert(lightSleepCount()==1 && lightSleepMicros()==30000);
+  assert(lightSleepWakeCause()==ESP_SLEEP_WAKEUP_TIMER);
+  assert(!wakes[14] && !wakes[0] && intr[14]==GPIO_INTR_POSEDGE && intr[0]==GPIO_INTR_DISABLE);
+  assert(!wakes[7] && !wakes[40] && !wakes[41]);
+  assert(!takeSleepWheelWake());
+  assert(enabledSources==0);
+  // Playback temporarily blocks sleep, then allows it again without a reset.
+  auto sound=idle; sound.audio=true;
+  assert(!idleLightSleep(sound) && calls==1);
+  assert(idleLightSleep(idle) && calls==2);
+  result=99; assert(!idleLightSleep(idle));
+  assert(calls==3 && lightSleepCount()==2 && enabledSources==0);
+  assert(!idleLightSleep(idle) && calls==3); // no failure storm
+  result=0; assert(setLightSleep(true));
+  configResult=99; assert(!idleLightSleep(idle) && calls==3 && enabledSources==0);
+  configResult=0; assert(setLightSleep(true));
+  assert(idleLightSleep(idle) && calls==4);
+  assert(setLightSleep(false) && !idleLightSleep(idle) && calls==4);
+}
+''',
+}
+with tempfile.TemporaryDirectory(prefix='cpu-sleep-test-') as directory:
+    temp = Path(directory)
+    for name, content in FILES.items():
+        path = temp / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+    binary = temp / 'check'
+    subprocess.run(['g++', '-std=c++17', '-Wall', '-Wextra', '-Werror',
+                    f'-I{temp}', f'-I{ROOT / "src"}', str(ROOT / 'src/cpu_sleep.cpp'),
+                    str(temp / 'test.cpp'), '-o', str(binary)], check=True)
+    subprocess.run([str(binary)], check=True)
+    print('Light sleep gates, wake cleanup, stats and error fallback: passed')

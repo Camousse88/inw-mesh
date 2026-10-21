@@ -11,6 +11,7 @@
 #include <Preferences.h>
 #include <soc/rtc_cntl_reg.h>
 #include "power.h"
+#include "cpu_sleep.h"
 #include "notify.h"
 #include "statusbar.h"
 #include "ota.h"
@@ -865,6 +866,11 @@ static void usbCommands() {
     if (!strcmp(line, "cpu")) {
       Serial.printf("[cpu] saving=%d clock=%lu MHz screen=%s\r\n", power::cpuSaving() ? 1 : 0,
                     (unsigned long)power::cpuClockMhz(), dimmer.asleep() ? "off" : "on");
+      Serial.printf("[sleep] enabled=%d state=%s cycles=%lu elapsed_ms=%llu wake=%lu\r\n",
+                    power::lightSleep() ? 1 : 0, power::lightSleepStatus(),
+                    (unsigned long)power::lightSleepCount(),
+                    (unsigned long long)(power::lightSleepMicros() / 1000),
+                    (unsigned long)power::lightSleepWakeCause());
       continue;
     }
     // The browser installer sends this before it resets the pager, so nothing
@@ -2232,5 +2238,18 @@ void loop() {
   // Screen state is the only CPU policy input. Notifications, sound and radio
   // work all stay at 80 MHz while the screen is off, when saving is enabled.
   power::updateCpu(dimmer.asleep());
-  delay(dimmer.asleep() && !jingle.playing() && !bleConnected() ? 30 : 2);
+  // Recheck VBUS just before sleeping, not only the battery's cached poll.
+  // Bluetooth's controller is suspended only when its user setting is OFF.
+  power::SleepInputs idle{dimmer.asleep(), jingle.playing(), battery.pluggedIn(),
+    bleEnabled(), wifi::enabled(), s_gpsRail,
+    g_node && (g_node->hasPendingWork() || !radio_driver.isInRecvMode()), s_radioOk};
+  if (power::lightSleep() && power::cpuSaving() && idle.screenOff && !idle.audio &&
+      !idle.bluetooth && !idle.wifi && !idle.gps && idle.radioReady && !idle.meshBusy &&
+      millis() >= 120000) {
+    idle.usb = battery.pollVbus() || (bool)Serial; // also protect a live USB console
+    if (!idle.usb) idle.bluetooth = !blePrepareLightSleep();
+  }
+  if (!power::idleLightSleep(idle))
+    delay(dimmer.asleep() && !jingle.playing() && !bleConnected() ? 30 : 2);
+  if (power::takeSleepWheelWake()) dimmer.note(); // PCNT is clock-gated in light sleep
 }
