@@ -13,8 +13,8 @@ inline uint32_t now=0, yields=0;
 inline uint32_t millis() { return now; }
 inline void delay(uint32_t) { ++yields; }
 constexpr int HIGH=1, LOW=0;
-inline int radioLevel=0, buttonLevel=1, wheelPress=1, wheelA=1, wheelB=1;
-inline int digitalRead(int pin) { return pin==14 ? radioLevel : pin==0 ? buttonLevel : pin==7 ? wheelPress : pin==40 ? wheelA : wheelB; }
+inline int radioLevel=0, buttonLevel=1, wheelPress=1, wheelA=1, wheelB=1, imuLevel=0;
+inline int digitalRead(int pin) { return pin==14 ? radioLevel : pin==0 ? buttonLevel : pin==7 ? wheelPress : pin==8 ? imuLevel : pin==40 ? wheelA : wheelB; }
 struct SerialMock { template<class... T> void printf(const char*, T...) {} };
 inline SerialMock Serial;
 using portMUX_TYPE=int;
@@ -41,7 +41,7 @@ inline int calls=0, result=0, configResult=0, enabledSources=0;
 inline uint64_t timerUs=0;
 inline int64_t clockUs=0;
 inline int wakeCause=ESP_SLEEP_WAKEUP_TIMER;
-inline bool injectedRadio=false;
+inline bool injectedRadio=false, expectImu=false;
 inline int esp_sleep_enable_timer_wakeup(uint64_t us) { timerUs=us; enabledSources|=1; return configResult; }
 inline int esp_sleep_enable_gpio_wakeup() { enabledSources|=2; return 0; }
 int esp_light_sleep_start();
@@ -63,7 +63,7 @@ inline void gpio_wakeup_disable(int pin) { wakes[pin]=false; }
 inline void gpio_set_intr_type(int pin, int trigger) { intr[pin]=trigger; }
 inline int esp_light_sleep_start() {
   ++calls;
-  assert(wakes[14] && wakes[0]);
+  assert(wakes[14] && wakes[0] && wakes[8]==expectImu);
   assert(!wakes[7] && !wakes[40] && !wakes[41] && !wakes[6]);
   clockUs+=injectedRadio ? 7000 : timerUs;
   return result;
@@ -88,7 +88,7 @@ namespace power {
 }
 int main() {
   using namespace power;
-  SleepInputs idle{true,false,false,false,false,false,false,true,false,false,150000};
+  SleepInputs idle{true,false,false,false,false,false,false,true,false,false,false,150000};
   assert(!lightSleep()); assert(!idleLightSleep(idle) && calls==0);
   writable=false; assert(!setLightSleep(true) && !lightSleep());
   writable=true; shortWrite=true; assert(!setLightSleep(true) && !lightSleep());
@@ -125,12 +125,19 @@ int main() {
   assert(!wakes[7] && !wakes[40] && !wakes[41]);
   assert(lightSleepLastMs()==30000 && lightSleepMaxMs()==30000);
   assert(enabledSources==0);
+  // Autonomous IMU events add GPIO8 only while armed; never keyboard/wheel.
+  idle.imuIrq=true; expectImu=true;
+  imuLevel=1; assert(!idleLightSleep(idle) && calls==1); imuLevel=0;
+  assert(idleLightSleep(idle) && calls==2);
+  assert(!wakes[8] && intr[8]==GPIO_INTR_DISABLE);
+  idle.imuIrq=false; expectImu=false;
+  calls=1; // remaining checks count from this baseline
   // Playback temporarily blocks sleep, then allows it again without a reset.
   auto sound=idle; sound.audio=true;
   assert(!idleLightSleep(sound) && calls==1);
   assert(idleLightSleep(idle) && calls==2);
   result=99; assert(!idleLightSleep(idle));
-  assert(calls==3 && lightSleepCount()==2 && enabledSources==0);
+  assert(calls==3 && lightSleepCount()==3 && enabledSources==0);
   assert(!idleLightSleep(idle) && calls==3); // no failure storm
   result=0; assert(setLightSleep(true));
   configResult=99; assert(!idleLightSleep(idle) && calls==3 && enabledSources==0);

@@ -22,6 +22,7 @@ switching, with an opt-in setting and the pager's existing 30 ms idle delay.
 ```sh
 python tools/test_cpu_power.py
 python tools/test_cpu_sleep.py
+python tools/test_motion_sleep.py
 pio run -e t-lora-pager
 ```
 
@@ -41,7 +42,7 @@ official OTA URL or signing keys, so an official update can replace the test bui
 
 ### MeshCore web flasher / Custom Firmware
 
-Use **SquatchMesh-1.2.14-cpu-test6-Pager-merged.bin**, not the application-only
+Use **SquatchMesh-1.2.14-cpu-test7-Pager-merged.bin**, not the application-only
 file, for a full install. The merged image includes the 16 MB bootloader,
 partition table, blank OTA-selection data (selecting app0), and the application.
 It also covers NVS with blank bytes: back up settings and identity first.
@@ -50,7 +51,7 @@ selects a full erase with a warning. This wipes on-device identity, contacts,
 settings and messages; export/SD backup is required if they need to be kept.
 An application-only image at 0x10000 does not switch a device booting app1 to
 app0, and cannot boot an erased device. Never erase when flashing an app-only file.
-Check Settings > System > version for `1.2.14-cpu-test6` after installing.
+Check Settings > System > version for `1.2.14-cpu-test7` after installing.
 
 ### Hardware validation
 
@@ -78,7 +79,7 @@ Check Settings > System > version for `1.2.14-cpu-test6` after installing.
 Test3: CPU status/log lines use CRLF for compatibility with the MeshCore web
 console. The `cpu` command no longer needs a following `themes` command.
 
-## Test6: CPU sleep until an event or scheduled work (experimental)
+## Test7: CPU sleep until an event or scheduled work (experimental)
 
 Settings > Battery > **CPU light sleep** is a separate opt-in, persisted in
 `inw-cpu/light` (also absent from exported UI backups). Enable **CPU power
@@ -111,15 +112,49 @@ press have no sleep wake source and do not inhibit sleep if held. On subsequent
 radio/timer/button wake, the original loop drains and ignores their buffered
 input while dark. CPU timer/radio wakes do not themselves light the screen.
 
-The original BHI260AP motion features poll its FIFO every 40 ms. This build
-preserves that behavior and **inhibits long sleep while the IMU is streaming**,
-instead of silently removing raise-to-wake, face-down quiet or man-down.
-To test long sleep, turn off raise to wake and stay on while held in
-Settings > Display, quiet when face down in Settings > Sound, and man-down
-in Tools > Field > SOS beacon if enabled. Battery saver also
-pauses motion except an enabled man-down alarm. The sleep state displays
-`motion sensor polling` if this is the blocker. Supporting motion while sleeping
-requires a separate event-driven sensor change and is not claimed here.
+Test7 replaces the unconditional motion-polling block with autonomous event
+watching when the logical screen is OFF and both CPU options are ON. The source
+check is SensorLib 0.4.1's `BHI260AP_TiltDetector` example: it uses the same
+`BOSCH_APP30_SHUTTLE_BHI260_FW` image as this build, configures virtual sensor 48
+(Tilt Detector) at 1 Hz (event enable, not periodic samples), and supports IRQ
+operation. The BHI260AP datasheet lists 48 and 55 (Significant Motion) as wake-up
+events; LilyGo wires HIRQ to GPIO8. This is a source-level feasibility check,
+not a successful physical sensor test.
+
+At runtime the code checks `bhy2_is_sensor_available` for events 48 and 55 on the
+actual running image. Tilt is required for raise/quiet; significant motion is
+also armed if available. After at least 3 s of active sampling and 2.5 s without
+measured movement, raw accelerometer ODR is set to zero and read back. Only
+wake-event/fault interrupts remain enabled, active-high and level-triggered.
+GPIO8 becomes a light-sleep wake source only in this state. No 25 Hz raw samples
+are enabled during event watch. Tilt and significant motion are thresholded
+algorithms: not every tiny vibration is guaranteed to trigger either event.
+
+An event only wakes the CPU at 80 MHz while the screen remains logically OFF.
+It drains the FIFO, disables the event sensors, restores the original interrupt
+mask, and starts a short 25 Hz sampling window. The existing orientation/raise
+heuristic receives the last attitude as a seed and alone decides screen wake;
+`raise to wake` OFF still prevents motion from lighting it. With continuous
+movement, the CPU can remain awake at 80 MHz to finish sampling. Once stable it
+rearms the events; one-shot significant motion is explicitly rearmed. A button,
+message-screen wake, option change or setting change resumes the normal path.
+Callbacks are removed on exit to avoid accumulating registrations each cycle.
+
+`quiet when face down` can stay ON. Before a notification decides sound/light,
+an event-watch sensor resumes raw samples for a bounded fresh orientation check
+(3 samples, at most 180 ms). Cached face-down silence is kept only if the fresh
+attitude still agrees and no motion IRQ was pending. A motion IRQ clears the old
+face-down state and starts the original 2-second stillness qualification again.
+The sample burst does not light the screen itself and stays at 80 MHz if dark.
+
+**Man-down remains on the original continuous-polling path in test7.** Its small
+movement/immobility thresholds are not equivalent to Tilt/Significant Motion,
+so no event-only safety-alarm behavior is claimed. If man-down is enabled, the
+CPU does not use long sleep and Battery says `man-down uses polling`.
+Unsupported tilt, configuration/readback failure, unexpected/stuck IRQ cause a
+visible fallback to normal sampling. This deliberately inhibits long sleep
+rather than claiming the sensor is watching when it is not. No motion-related
+user setting is automatically disabled.
 
 ### Guards and observations
 
@@ -138,30 +173,38 @@ controller are suspended before sleeping and resumed before Bluetooth is
 re-enabled. Bonds are kept. BLE/Wi-Fi connections are not maintained through
 manual light sleep. Radio/GPS/motion preferences are not changed automatically.
 
-Battery and USB `cpu` show count, accumulated elapsed milliseconds, last and
+Battery also shows motion-watch state and event count. USB `cpu` prints event
+capabilities (tilt/significant), GPIO level and state. Battery and USB show
+sleep count, accumulated elapsed milliseconds, last and
 longest measured sleep-call duration and wake cause. The measurement includes
 entry/exit overhead. USB inhibits new sleeps but keeps prior counters. In Battery
 the current state will say `screen on`; inspect last/max durations to confirm
 long sleeps. Hardware validation is required before an upstream PR:
 
 1. With CPU options OFF, compare input behavior to official firmware.
-2. With both options ON, motion/BLE/Wi-Fi OFF and USB unplugged, after the 2-minute
-   grace period leave it dark for a minute. Keyboard/wheel must not light it.
+2. With both options ON, BLE/Wi-Fi OFF and USB unplugged, after the 2-minute
+   grace period leave it dark and stationary for a minute. Motion options may
+   stay ON, except man-down. Keyboard/wheel must not light it.
    The middle button must wake it immediately. Last/max should be seconds.
 3. With message-screen wake OFF, verify messages/ACKs/retries and sound at 80 MHz,
    followed by new sleeps. With message-screen wake ON, verify screen wake.
 4. Verify automatic adverts, battery reading/checkpoint, queued saves, external
    sensor/alert output and GPS window boundaries continue on schedule.
-5. Re-enable motion: long sleep should stop and original raise-to-wake/man-down
-   behavior should return. Re-enable BLE/Wi-Fi and sync; test USB insertion.
-6. Compare battery current/autonomy to test3 under matching settings and traffic.
+5. With raise-to-wake ON, tilt from a flat position into reading position: IRQ
+   events should increase, raw samples should resume, and the original raise
+   decision should light the screen. With raise OFF and quiet-face-down ON, the
+   same event must leave the screen OFF. Verify face-down notifications stay
+   silent and turning face-up permits sound; test messages arriving during a
+   turn, during the burst, and after >30 s without movement. Repeat many cycles.
+6. Enable man-down: long sleep must stop and the original alarm behavior remain.
+   Missing events/configuration/readback/stuck-IRQ are simulated in host tests;
+   hardware fallback must be checked if observed. Re-enable BLE/Wi-Fi and sync;
+   test USB insertion.
+7. Compare battery current/autonomy to test3 under matching settings and traffic.
    Compilation/host tests establish neither on-device stability nor power gain.
 
-Motion settings are already respected: `motion::apply()` streams only while
-raise-to-wake, stay-on-held, face-down-quiet or man-down needs it (subject to
-Battery saver). If none is in use, streaming stops and does not inhibit sleep.
-Turn off the two normally enabled Display motion toggles for the initial test;
-quiet-face-down and man-down should also be off if previously enabled. With
-BLE/Wi-Fi/GPS inactive, no pending work or sooner scheduled deadline, last/max
-sleep-call duration should approach 30000 ms. Radio, middle button, pending
-retry, advert, sensor/alert or GPS-window deadlines may legitimately end it sooner.
+With no motion features in use, the existing apply() stops sampling and no IMU
+IRQ wake is added. With only stay-on-held enabled, the raw sensor is paused while
+the screen is off and resumed on screen wake; it needs no motion wake source.
+With raise/quiet in use, Battery should show an IRQ watch while sleeping, and a
+sampling state after an event. All measurements remain necessary on the Pager.

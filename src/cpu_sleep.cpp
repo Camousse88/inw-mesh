@@ -64,6 +64,10 @@ bool idleLightSleep(const SleepInputs& in) {
     s_status = "pending IRQ/button";
     return false;
   }
+  if (in.imuIrq && digitalRead(PIN_IMU_INT) == HIGH) {
+    s_status = "pending motion IRQ";
+    return false;
+  }
   updateCpu(true);
   if (cpuClockMhz() != 80) { s_status = "80 MHz unavailable"; return false; }
 
@@ -75,6 +79,7 @@ bool idleLightSleep(const SleepInputs& in) {
   portENTER_CRITICAL(&s_mux);
   if (err == ESP_OK) err = gpio_wakeup_enable((gpio_num_t)PIN_LORA_DIO1, GPIO_INTR_HIGH_LEVEL);
   if (err == ESP_OK) err = gpio_wakeup_enable((gpio_num_t)PIN_BUTTON, GPIO_INTR_LOW_LEVEL);
+  if (err == ESP_OK && in.imuIrq) err = gpio_wakeup_enable((gpio_num_t)PIN_IMU_INT, GPIO_INTR_HIGH_LEVEL);
   if (err == ESP_OK) err = esp_sleep_enable_gpio_wakeup();
   const int64_t start = esp_timer_get_time();
   if (err == ESP_OK) err = esp_light_sleep_start();
@@ -84,6 +89,10 @@ bool idleLightSleep(const SleepInputs& in) {
   gpio_set_intr_type((gpio_num_t)PIN_LORA_DIO1, GPIO_INTR_POSEDGE);
   gpio_wakeup_disable((gpio_num_t)PIN_BUTTON);
   gpio_set_intr_type((gpio_num_t)PIN_BUTTON, GPIO_INTR_DISABLE);
+  if (in.imuIrq) {
+    gpio_wakeup_disable((gpio_num_t)PIN_IMU_INT);
+    gpio_set_intr_type((gpio_num_t)PIN_IMU_INT, GPIO_INTR_DISABLE);
+  }
   portEXIT_CRITICAL(&s_mux);
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_GPIO);
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);

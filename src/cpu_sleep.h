@@ -8,6 +8,7 @@ namespace power {
   struct SleepInputs {
     bool screenOff, audio, usb, bluetooth, wifi, gps, meshBusy, radioReady;
     bool motion, background;
+    bool imuIrq; // armed autonomous events, never the 25 Hz sample stream
     uint32_t deadline; // absolute millis() of earliest application deadline
   };
   // Returns true if a light-sleep attempt consumed this loop's idle interval.

@@ -649,6 +649,7 @@ static void alert(const char* title, const char* text, AlertKind kind, bool sile
   const Jingle* sound = kind == AlertKind::Dm ? th.dm : kind == AlertKind::Mention ? th.mention : th.msg;
   const VibePattern& vibe = kind == AlertKind::Dm ? th.vibeDm : kind == AlertKind::Mention ? th.vibeMention : th.vibeMsg;
   // Face down on a table (with that setting on): no light, no sound, no buzz.
+  motion::refreshForAlert();
   const bool faceDown = motion::faceDown();
   if (ui_settings.wakeOnMessage && !silent && !faceDown) dimmer.wake();
   nav.banner(title, text);
@@ -878,6 +879,7 @@ static void usbCommands() {
                     (unsigned long)power::lightSleepWakeCause());
       Serial.printf("[sleep] last_ms=%lu max_ms=%lu\r\n",
                     (unsigned long)power::lightSleepLastMs(), (unsigned long)power::lightSleepMaxMs());
+      motion::debugPrint();
       continue;
     }
     // The browser installer sends this before it resets the pager, so nothing
@@ -2140,7 +2142,7 @@ void loop() {
   ota::tick();
   report::tick();
   ext::tick();
-  motion::tick();
+  motion::tick(dimmer.asleep());
   nodeLoop();
   lap(3);
   nav.tick();
@@ -2247,7 +2249,7 @@ void loop() {
   // work all stay at 80 MHz while the screen is off, when saving is enabled.
   power::updateCpu(dimmer.asleep());
   // Keep the original screen-wake policy above: no keyboard/wheel wake here.
-  // The FIFO-polled motion feature is kept intact, and inhibits long sleep.
+  // Motion only blocks sleep during sampling bursts or its explicit fallback.
   const uint32_t now = millis();
   SleepDeadline deadline(now);
   deadline.limit(battery.sleepBudgetMs(now, batteryIntervalMs(
@@ -2267,7 +2269,7 @@ void loop() {
   power::SleepInputs idle{dimmer.asleep(), jingle.playing(), battery.pluggedIn(),
     bleEnabled(), wifi::enabled(), s_gpsRail,
     g_node && (g_node->hasPendingWork() || !radio_driver.isInRecvMode()), s_radioOk,
-    motion::needsFastPolling(), foreground, now + deadline.ms()};
+    motion::needsFastPolling(), foreground, motion::irqWatch(), now + deadline.ms()};
   const bool candidate = power::lightSleep() && power::cpuSaving() && idle.screenOff &&
     !idle.audio && !idle.bluetooth && !idle.wifi && !idle.gps && idle.radioReady &&
     !idle.meshBusy && !idle.motion && !idle.background && deadline.ms() >= 2 && now >= 120000;

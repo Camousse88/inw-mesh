@@ -10,6 +10,7 @@
 #include "board_pins.h"
 #include "logstore.h"
 #include "power.h"
+#include "cpu_sleep.h"
 
 extern LogStore logs;
 
@@ -21,6 +22,17 @@ bool loaded = false, failed = false, streaming = false;
 uint8_t sensorId = 0;                   // the accelerometer this image offers
 uint8_t kicks = 0;                      // restarts after it went quiet
 uint32_t kickedAt = 0;
+// Wake-capable event sensors in the SAME APP30 image used by the TiltDetector
+// example in SensorLib 0.4.1. Check the running image instead of assuming IDs exist.
+bool tiltAvailable = false, significantAvailable = false;
+bool watching = false, watchEvent = false, watchFailed = false;
+bool tiltArmed = false, significantArmed = false;
+uint8_t savedInterrupt = 0;
+uint32_t watchEvents = 0, samples = 0, activeUntil = 0;
+const char* watchStatus = "off";
+void leaveWatch(bool resume);
+void onWatch(uint8_t, const uint8_t*, uint32_t, uint64_t*, void*);
+
 
 bool raiseOn = true, holdOn = true, quietOn = false;
 uint8_t manMin = 0;
@@ -80,6 +92,7 @@ bool shaken = false;
 
 void sample(const Vec& a) {
   const uint32_t now = millis();
+  ++samples;
   if (now - lastSample > 3000) movedAt = now;    // after a gap, count stillness afresh
   lastSample = now;
   kicks = 0;
@@ -191,6 +204,12 @@ bool load() {
   }
   imu.setRemapAxes(SensorRemap::BOTTOM_LAYER_TOP_LEFT_CORNER);   // how LilyGo mounts it
   loaded = true;
+  pinMode(PIN_IMU_INT, INPUT);
+  tiltAvailable = bhy2_is_sensor_available(BoschSensorID::TILT_DETECTOR, imu.getDev());
+  significantAvailable = bhy2_is_sensor_available(BoschSensorID::SIGNIFICANT_MOTION, imu.getDev());
+  Serial.printf("[motion] event support: tilt=%d significant=%d GPIO=%d\r\n",
+                tiltAvailable, significantAvailable, PIN_IMU_INT);
+  activeUntil = millis() + 3000;
   logs.add(LOG_INFO, "motion sensor up in %lums", (unsigned long)(millis() - t0));
   return true;
 }
@@ -221,12 +240,115 @@ void stream(bool on) {
   jitter = 0;
 }
 
+void onWatch(uint8_t, const uint8_t*, uint32_t, uint64_t*, void*) {
+  watchEvent = true;
+  ++watchEvents;
+}
+
+// Stop only the event sensors owned by this feature; restore the original
+// interrupt mask before returning to normal sample processing.
+void leaveWatch(bool resume) {
+  if (!watching) return;
+  if (tiltAvailable) {
+    imu.configure(BoschSensorID::TILT_DETECTOR, 0, 0);
+    imu.removeResultEvent(BoschSensorID::TILT_DETECTOR, onWatch);
+  }
+  if (significantAvailable) {
+    imu.configure(BoschSensorID::SIGNIFICANT_MOTION, 0, 0);
+    imu.removeResultEvent(BoschSensorID::SIGNIFICANT_MOTION, onWatch);
+  }
+  tiltArmed = significantArmed = false;
+  imu.setInterruptRegisterValue(savedInterrupt);
+  watching = false;
+  watchEvent = false;
+  if (resume) {
+    // Keep the last attitude as a seed: the existing raise algorithm compares
+    // it with the new samples. Never translate an IRQ directly into screen wake.
+    ringN = ringAt = 1;
+    ring[0] = unit(lp);
+    steadyN = 0;
+    if (!imu.configure(sensorId, RATE_HZ, 0)) {
+      failed = watchFailed = true;
+      watchStatus = "accelerometer resume failed";
+    } else {
+      streaming = true;
+      lastSample = millis();
+      activeUntil = millis() + 3000;
+      watchStatus = "sampling after wake";
+    }
+  }
+}
+
+bool enterWatch() {
+  const bool needEvents = raiseOn || quietOn;
+  if (needEvents && !tiltAvailable) {
+    watchFailed = true;
+    watchStatus = "tilt event unavailable; polling";
+    return false;
+  }
+  savedInterrupt = imu.getInterruptRegisterValue();
+  if (!imu.configure(sensorId, 0, 0)) {
+    watchFailed = true; watchStatus = "cannot stop samples; polling"; return false;
+  }
+  // Confirm ODR is really zero: an interrupt on every accelerometer sample
+  // would defeat long sleep even though the GPIO wiring itself works.
+  bhy2_virt_sensor_conf cfg{};
+  if (bhy2_get_virt_sensor_cfg(sensorId, &cfg, imu.getDev()) != BHY2_OK || cfg.sample_rate != 0) {
+    imu.configure(sensorId, RATE_HZ, 0);
+    watchFailed = true; watchStatus = "sample stop unconfirmed; polling"; return false;
+  }
+  streaming = false;
+  watching = true;  // makes all partial-failure cleanup use the same path
+  watchEvent = false;
+  imu.update();     // drain old samples/metadata before arming the level IRQ
+  InterruptConfig config;
+  config.wakeUpFIFOEnabled = true;
+  config.nonWakeUpFIFOEnabled = false;
+  config.statusFIFOEnabled = false;
+  config.debuggingEnabled = false;
+  config.faultEnabled = true;
+  config.polarity = InterruptConfig::Polarity::ACTIVE_HIGH;
+  config.triggerMode = InterruptConfig::TriggerMode::LEVEL;
+  bool ok = imu.configureInterrupt(config) && imu.getInterruptRegisterValue() == config.getRegisterValue();
+  if (ok && needEvents) {
+    tiltArmed = imu.onResultEvent(BoschSensorID::TILT_DETECTOR, onWatch) &&
+                imu.configure(BoschSensorID::TILT_DETECTOR, 1, 0);
+    ok = tiltArmed;
+    if (ok && significantAvailable) {
+      significantArmed = imu.onResultEvent(BoschSensorID::SIGNIFICANT_MOTION, onWatch) &&
+                         imu.configure(BoschSensorID::SIGNIFICANT_MOTION, 1, 0);
+      ok = significantArmed;
+    }
+  }
+  if (!ok) {
+    leaveWatch(true);
+    watchFailed = true;
+    watchStatus = "event setup failed; polling";
+    logs.add(LOG_WARN, "motion IRQ setup failed; keeping polling");
+    return false;
+  }
+  imu.update();     // setup responses may assert IRQ; retain any real event
+  if (!watchEvent && digitalRead(PIN_IMU_INT) == HIGH) {
+    leaveWatch(true);
+    watchFailed = true;
+    watchStatus = "IRQ stuck high; polling";
+    return false;
+  }
+  watchStatus = needEvents ? (significantArmed ? "tilt/motion IRQ watch" : "tilt IRQ watch") : "paused until screen wake";
+  return true;
+}
+
 void apply() {
+  leaveWatch(false);
+  watchFailed = false;
+  watchStatus = "normal polling";
+  activeUntil = millis() + 3000;
   // Battery saver stops the sensor, unless the man-down alarm is on: it can't watch
   // without it, and it is the one use here that is about safety.
   const bool want = saverOn ? manMin != 0 : (raiseOn || holdOn || quietOn || manMin);
   if (want && !loaded && !failed) load();
   stream(want);
+  if (!want) watchStatus = "off";
 }
 
 void save() {
@@ -253,11 +375,40 @@ void begin() {
   apply();
 }
 
-void tick() {
+void tick(bool screenOff) {
   if (power::saver() != saverOn) {
     saverOn = power::saver();
     apply();
     logs.add(LOG_INFO, "motion: battery saver %s, sensor %s", saverOn ? "on" : "off", streaming ? "running" : "stopped");
+  }
+  static bool savingWas = false;
+  const bool saving = power::lightSleep() && power::cpuSaving();
+  if (saving != savingWas) {
+    savingWas = saving;
+    watchFailed = false;
+    activeUntil = millis() + 3000;
+  }
+  if (manMin) watchStatus = "man-down uses polling";
+  const bool useWatch = saving && screenOff && !manMin && !watchFailed;
+  if (watching) {
+    if (!useWatch) leaveWatch(true);
+    else {
+      if (digitalRead(PIN_IMU_INT) == HIGH) {
+        imu.update();
+        if (!watchEvent) {
+          leaveWatch(true);
+          watchFailed = true;
+          watchStatus = "unexpected IRQ; polling";
+        }
+      }
+      if (watching && watchEvent) {
+        // Oneshot significant-motion is rearmed on the next enterWatch().
+        movedAt = millis();
+        face = faceTiming = false;
+        leaveWatch(true);
+      }
+      if (watching) return; // no polling of a FIFO at 25 Hz while sleeping
+    }
   }
   if (!streaming) return;
   static uint32_t polled = 0;
@@ -274,14 +425,42 @@ void tick() {
     logs.add(LOG_WARN, "motion sensor went quiet, restarting it (%u)", kicks);
     imu.configure(sensorId, RATE_HZ, 0);
   }
+  // Allow the original orientation/raise/face-down logic to settle, and avoid
+  // repeated sleep transitions while being carried or moving continuously.
+  if (useWatch && (int32_t)(now - activeUntil) >= 0 && now - movedAt >= 2500 &&
+      now - lastSample < 500) enterWatch();
 }
 
-bool needsFastPolling() { return streaming; }
+bool irqWatch() { return watching && (tiltArmed || significantArmed); }
+const char* sleepState() { return watchStatus; }
+uint32_t eventCount() { return watchEvents; }
 
-bool running() { return streaming && millis() - lastSample < 3000; }
+void refreshForAlert() {
+  if (!quietOn || saverOn || !watching) return;
+  const bool wasFace = face;
+  const Vec old = unit(lp);
+  const bool pendingMotion = watchEvent || digitalRead(PIN_IMU_INT) == HIGH;
+  if (pendingMotion) { imu.update(); movedAt = millis(); face = faceTiming = false; }
+  leaveWatch(true);
+  if (!streaming) return;
+  const uint32_t first = samples, start = millis();
+  // A bounded, fresh orientation check before choosing sound/light. It runs at
+  // 80 MHz while dark, not on an ISR, and does not itself wake the display.
+  while (samples - first < 3 && millis() - start < 180) { imu.update(); delay(5); }
+  if (samples - first >= 3 && wasFace && !pendingMotion &&
+      degBetween(old, unit(lp)) < 15 && tilt > 150 && shake < 0.05f) {
+    face = faceTiming = true;
+    faceSince = millis() - 2001;
+  }
+}
+
+bool needsFastPolling() { return streaming || watchEvent || (watchFailed && loaded); }
+
+bool running() { return !failed && (watching || (streaming && millis() - lastSample < 3000)); }
 
 const char* state() {
   if (failed) return "not responding";
+  if (watching) return watchStatus;
   if (running()) return saverOn ? "on for man-down (saver)" : "on";
   if (saverOn && (raiseOn || holdOn || quietOn)) return "paused: battery saver";
   return streaming ? "starting" : "off";
@@ -339,7 +518,9 @@ bool lean(float& x, float& y) {
 }
 
 void debugPrint() {
-  Serial.printf("[motion] %s  g %.3f %.3f %.3f  tilt %.0f  shake %.3f  jitter %.3f  held %lus  still %lus  face %d  raise %d hold %d quiet %d mandown %u\n",
+  Serial.printf("[motion] sleep=%s events=%lu tilt_supported=%d significant_supported=%d irq=%d\r\n",
+                sleepState(), (unsigned long)eventCount(), tiltAvailable, significantAvailable, digitalRead(PIN_IMU_INT));
+  Serial.printf("[motion] %s  g %.3f %.3f %.3f  tilt %.0f  shake %.3f  jitter %.3f  held %lus  still %lus  face %d  raise %d hold %d quiet %d mandown %u\r\n",
                 state(), lp.x, lp.y, lp.z, tilt, shake, jitter, (unsigned long)(heldFor() / 1000),
                 (unsigned long)(stillFor() / 1000), face, raiseOn, holdOn, quietOn, manMin);
 }

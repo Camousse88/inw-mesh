@@ -983,7 +983,9 @@ static void batteryMenu() {
   m->toggle("CPU light sleep", [] { return power::lightSleep(); }, [] {
     if (!power::setLightSleep(!power::lightSleep())) nav.toast("could not save sleep setting");
   });
-  m->info("light sleep needs", []() -> String { return String("CPU saver on; USB, BLE, Wi-Fi, motion off"); });
+  m->info("light sleep needs", []() -> String { return String("CPU saver on; USB, BLE, Wi-Fi off"); });
+  m->info("motion sleep", []() -> String { return String(motion::sleepState()); });
+  m->info("motion events", []() -> String { return String(motion::eventCount()); });
   m->info("battery in light sleep", []() -> String { return String("check every 30 s while screen off"); });
   m->info("light sleep state", []() -> String { return String(power::lightSleepStatus()); });
   m->info("sleep cycles / ms", []() -> String {
