@@ -60,6 +60,7 @@ struct bhy2_data_xyz { int16_t x,y,z; };
 inline bhy2_data_xyz pose{0,0,4096};
 inline void bhy2_parse_xyz(const uint8_t* p,bhy2_data_xyz* v) { std::memcpy(v,p,sizeof(*v)); }
 inline bool tiltSupported=true,sigSupported=true,rejectEvents=false,rejectStop=false,rejectResume=false,stuckIrq=false;
+inline bool deliverSamples=true;
 inline float rates[256]={};
 using Callback=void(*)(uint8_t,const uint8_t*,uint32_t,uint64_t*,void*);
 inline Callback callbacks[256]={};
@@ -91,7 +92,7 @@ public:
   }
   void removeResultEvent(uint8_t id,Callback) { callbacks[id]=nullptr; }
   bool configure(uint8_t id,float rate,uint32_t) {
-    if (rejectResume && id==4 && rate>0) return false;
+    if (rejectResume && (id==4||id==1) && rate>0) return false;
     if (rejectEvents && (id==48||id==55) && rate>0) return false;
     rates[id]=rate;
     if (id==4||id==1) lastRaw=millis();
@@ -107,7 +108,7 @@ public:
       callbacks[id](id,nullptr,0,nullptr,nullptr);
     }
     imuLevel=stuckIrq ? 1 : 0;
-    if (rates[4]>0 && callbacks[4] && millis()-lastRaw>=40) {
+    if (deliverSamples && rates[4]>0 && callbacks[4] && millis()-lastRaw>=40) {
       lastRaw=millis(); callbacks[4](4,reinterpret_cast<const uint8_t*>(&pose),sizeof(pose),nullptr,nullptr);
     }
   }
@@ -131,65 +132,66 @@ void frames(int count,bool off=true) {
 }
 int main(int argc,char** argv) {
   std::string scenario=argc>1?argv[1]:"normal";
-  if (scenario=="missing") tiltSupported=false;
-  if (scenario=="config") rejectEvents=true;
   if (scenario=="stop") rejectStop=true;
-  if (scenario=="stuck") stuckIrq=true;
   motion::begin();
   assert(rates[4]==25);
-  frames(150);
-  if (scenario!="normal") {
-    assert(!motion::irqWatch() && motion::needsFastPolling() && rates[4]==25);
+  motion::tick(true);
+  if (scenario=="stop") {
+    assert(motion::needsFastPolling() && rates[4]==25);
     assert(std::strstr(motion::sleepState(),"polling"));
-    assert(callbacks[48]==nullptr && callbacks[55]==nullptr);
+    assert(!motion::irqWatch());
     return 0;
   }
-  assert(motion::irqWatch() && !motion::needsFastPolling() && rates[4]==0);
-  assert(rates[48]==1 && rates[55]==1 && interruptMask==14);
-  fakeNow+=30000; motion::tick(true);
-  assert(motion::irqWatch() && motion::running() && rates[4]==0);
-  assert(!motion::takeRaise());
-  // A tilt IRQ only starts a raw sampling burst. Existing raise logic decides.
-  pose={0,-3277,2458}; pendingEvent=48; imuLevel=1;
-  motion::tick(true);
-  assert(!motion::irqWatch() && motion::needsFastPolling() && motion::eventCount()==1);
-  assert(rates[4]==25 && interruptMask==8 && callbacks[48]==nullptr);
-  frames(20);
-  assert(motion::takeRaise());
-  assert(!motion::takeRaise());
-  // Quiet-face-down survives 30 s with raw sampling disabled, and is refreshed
-  // before audio; a changed orientation must not keep stale silence enabled.
-  motion::setRaiseToWake(false); motion::setStayOnHeld(false); motion::setQuietFaceDown(true);
-  pose={0,0,-4096}; frames(200);
-  assert(motion::irqWatch() && motion::faceDown());
-  fakeNow+=30000; motion::tick(true); assert(motion::faceDown());
-  uint32_t before=millis(); motion::refreshForAlert();
-  assert(millis()-before<=180 && motion::faceDown() && !motion::irqWatch());
-  frames(200); assert(motion::irqWatch());
-  pose={0,0,4096}; motion::refreshForAlert(); assert(!motion::faceDown());
-  frames(200); assert(motion::irqWatch());
-  // Repeated entry/exit must remove callbacks, restore masks and rearm events.
-  for (int i=0;i<3;++i) {
-    pendingEvent=55; imuLevel=1; motion::tick(true);
-    assert(!motion::irqWatch() && rates[4]==25);
-    frames(150); assert(motion::irqWatch() && rates[55]==1);
+  assert(!motion::needsFastPolling() && rates[4]==0 && !motion::irqWatch());
+  // Walking for ten minutes, including a permanently asserted sensor IRQ,
+  // must neither resume sampling nor raise the screen.
+  for(int i=0;i<15000;++i) {
+    pose={int16_t(i%2?1800:-1800),0,int16_t(i%2?3600:-3600)};
+    pendingEvent=i%2?48:55; imuLevel=1;
+    frames(1);
+    assert(!motion::needsFastPolling() && !motion::takeRaise());
+    assert(rates[4]==0 && rates[48]==0 && rates[55]==0);
+    assert(callbacks[48]==nullptr && callbacks[55]==nullptr);
   }
-  // Turning the screen or CPU policy on/off resumes the original sample path.
-  motion::tick(false); assert(!motion::irqWatch() && rates[4]==25);
-  frames(150); assert(motion::irqWatch());
-  power::light=false; motion::tick(true); assert(!motion::irqWatch() && rates[4]==25);
-  power::light=true; frames(150); assert(motion::irqWatch());
-  // A failed accelerometer resume must not pretend it can sleep safely.
-  rejectResume=true; motion::tick(false);
-  assert(!motion::irqWatch() && motion::needsFastPolling());
-  assert(std::strstr(motion::sleepState(),"resume failed"));
-  rejectResume=false; motion::setQuietFaceDown(true);
-  frames(150); assert(motion::irqWatch());
-  // Man-down keeps the proven polling behavior instead of changing its timing.
+  motion::setQuietFaceDown(true); motion::tick(true);
+  // Fresh pose, including one never observed before sleeping, controls quiet.
+  for(int i=0;i<6;++i) {
+    pose={0,0,int16_t(i%2?4096:-4096)};
+    const uint32_t start=millis();
+    motion::refreshForAlert();
+    assert(millis()-start<=180 && motion::faceDown()==(i%2==0));
+    assert(!motion::needsFastPolling() && rates[4]==0 && !motion::takeRaise());
+  }
+  // Large acceleration while face down is not treated as lying still.
+  pose={0,0,-6000}; motion::refreshForAlert(); assert(!motion::faceDown());
+  deliverSamples=false;
+  const uint32_t timeoutStart=millis(); motion::refreshForAlert();
+  assert(millis()-timeoutStart==180 && !motion::faceDown() && rates[4]==0);
+  deliverSamples=true;
+  // A failed stop after an alert must prevent unsafe long sleep.
+  rejectStop=true; motion::refreshForAlert();
+  assert(motion::needsFastPolling() && rates[4]==25);
+  rejectStop=false; motion::setQuietFaceDown(true); motion::tick(true);
+  assert(!motion::needsFastPolling() && rates[4]==0);
+  // Failed read must not retain stale silence or a stale screen raise.
+  pose={0,0,-4096}; motion::refreshForAlert(); assert(motion::faceDown());
+  rejectResume=true; motion::refreshForAlert();
+  assert(!motion::faceDown() && !motion::takeRaise() && !motion::irqWatch());
+  rejectResume=false; motion::setQuietFaceDown(true); motion::tick(true);
+  // Screen wake and disabling either CPU option restore normal sampling.
+  motion::tick(false); assert(rates[4]==25 && motion::needsFastPolling());
+  frames(1); assert(rates[4]==0);
+  power::light=false; motion::tick(true); assert(rates[4]==25);
+  power::light=true; motion::tick(true); assert(rates[4]==0);
+  power::cpu=false; motion::tick(true); assert(rates[4]==25);
+  power::cpu=true; motion::tick(true); assert(rates[4]==0);
+  // Preserve the existing man-down exception, but suppress raise while saving.
   motion::setManDownMin(10); frames(150);
-  assert(!motion::irqWatch() && motion::needsFastPolling() && rates[4]==25);
-  motion::setManDownMin(0); motion::setQuietFaceDown(false);
-  assert(!motion::irqWatch() && !motion::needsFastPolling() && rates[4]==0);
+  assert(motion::needsFastPolling() && rates[4]==25 && !motion::takeRaise());
+  motion::setManDownMin(0); motion::tick(true); assert(rates[4]==0);
+  motion::setRaiseToWake(false); motion::setStayOnHeld(false); motion::setQuietFaceDown(false);
+  assert(!motion::needsFastPolling() && rates[4]==0);
+
 }
 ''',
 }
@@ -206,6 +208,6 @@ with tempfile.TemporaryDirectory(prefix='motion-sleep-test-') as directory:
     subprocess.run(['g++','-std=c++17','-Wall','-Wextra','-Werror',
                     f'-I{temp}',f'-I{ROOT / "src"}',str(temp/'motion.cpp'),
                     str(temp/'motion_test.cpp'),'-o',str(binary)],check=True)
-    for scenario in ('normal','missing','config','stop','stuck'):
+    for scenario in ('normal','stop'):
         subprocess.run([str(binary),scenario],check=True)
         print(f'Motion sleep {scenario}: passed')

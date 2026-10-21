@@ -125,12 +125,10 @@ int main() {
   assert(!wakes[7] && !wakes[40] && !wakes[41]);
   assert(lightSleepLastMs()==30000 && lightSleepMaxMs()==30000);
   assert(enabledSources==0);
-  // Autonomous IMU events add GPIO8 only while armed; never keyboard/wheel.
-  idle.imuIrq=true; expectImu=true;
-  imuLevel=1; assert(!idleLightSleep(idle) && calls==1); imuLevel=0;
-  assert(idleLightSleep(idle) && calls==2);
-  assert(!wakes[8] && intr[8]==GPIO_INTR_DISABLE);
-  idle.imuIrq=false; expectImu=false;
+  // Even a high IMU line cannot block sleep or add a motion wake source.
+  idle.imuIrq=true; imuLevel=1;
+  assert(idleLightSleep(idle) && calls==2 && !wakes[8]);
+  idle.imuIrq=false; imuLevel=0;
   calls=1; // remaining checks count from this baseline
   // Playback temporarily blocks sleep, then allows it again without a reset.
   auto sound=idle; sound.audio=true;

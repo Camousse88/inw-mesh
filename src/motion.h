@@ -13,12 +13,12 @@
 
 namespace motion {
   void begin();                // setup(): loads the sensor's firmware if anything is on
-  void tick(bool screenOff);   // loop(): stream while awake, autonomous events while asleep
-  bool irqWatch();             // GPIO8 may wake the CPU; does not itself light the screen
+  void tick(bool screenOff);   // loop(): stream while awake; pause while screen-off saving
+  bool irqWatch();             // always false: no motion wake source
   const char* sleepState();
   uint32_t eventCount();
   void refreshForAlert();       // fresh orientation before quiet-face-down decision
-  bool needsFastPolling();     // bursts, unsupported event firmware or man-down fallback
+  bool needsFastPolling();     // sampling, stop failure or man-down
   bool running();              // samples are coming in
   const char* state();         // "on", "off" or "not responding", for the menus and the log
   // Battery saver pauses raise to wake, quiet when face down and the lean, and stops
