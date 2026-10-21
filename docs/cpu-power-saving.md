@@ -41,7 +41,7 @@ official OTA URL or signing keys, so an official update can replace the test bui
 
 ### MeshCore web flasher / Custom Firmware
 
-Use **SquatchMesh-1.2.14-cpu-test5-Pager-merged.bin**, not the application-only
+Use **SquatchMesh-1.2.14-cpu-test6-Pager-merged.bin**, not the application-only
 file, for a full install. The merged image includes the 16 MB bootloader,
 partition table, blank OTA-selection data (selecting app0), and the application.
 It also covers NVS with blank bytes: back up settings and identity first.
@@ -50,7 +50,7 @@ selects a full erase with a warning. This wipes on-device identity, contacts,
 settings and messages; export/SD backup is required if they need to be kept.
 An application-only image at 0x10000 does not switch a device booting app1 to
 app0, and cannot boot an erased device. Never erase when flashing an app-only file.
-Check Settings > System > version for `1.2.14-cpu-test5` after installing.
+Check Settings > System > version for `1.2.14-cpu-test6` after installing.
 
 ### Hardware validation
 
@@ -78,23 +78,26 @@ Check Settings > System > version for `1.2.14-cpu-test5` after installing.
 Test3: CPU status/log lines use CRLF for compatibility with the MeshCore web
 console. The `cpu` command no longer needs a following `themes` command.
 
-## Test5: CPU sleep until an event or scheduled work (experimental)
+## Test6: CPU sleep until an event or scheduled work (experimental)
 
 Settings > Battery > **CPU light sleep** is a separate opt-in, persisted in
 `inw-cpu/light` (also absent from exported UI backups). Enable **CPU power
 saving** as well. Awake work stays at 80 MHz with the logical screen off;
 screen wake restores the boot clock (240 MHz on this build).
 
-The 30 ms sleep slices of test4 are removed. After the 2-minute boot grace,
+The 30 ms sleep slices of test4 are removed, and test5's 5-second battery limit is removed. After the 2-minute boot grace,
 `esp_light_sleep_start()` sleeps until the LoRa DIO1 IRQ, the middle/side button
 (GPIO0), or the earliest useful deadline. Sleep is capped at 30 seconds, as in
-MeshCore/EasySkyMesh ESP32 repeaters. On the Pager the existing battery refresh,
-critical-battery checks and RTC battery checkpoint normally limit it to around
-5 seconds. A radio IRQ or button can wake it immediately in that interval.
+MeshCore/EasySkyMesh ESP32 repeaters. With both CPU options ON and the logical screen OFF, the Pager's battery
+reading, charging/saver checks and RTC battery checkpoint now share one
+30-second schedule. Normal screen-on operation or either CPU option OFF uses
+5-second readings. Critical-low-voltage confirmation uses elapsed time (one
+minute), not twelve readings, so changing the cadence does not make it six
+minutes. There is no independent 5-second battery/checkpoint wake left. A radio IRQ or button can wake it immediately in that interval.
 Deadlines use signed millis differences and are rechecked after preparation.
 Pending DM retries/login, adverts, GPS window starts, external sensor readings
 and alert-output edges can require an earlier timer wake. USB insertion can be
-noticed on the next scheduled battery check (up to about 5 s while sleeping).
+noticed on the next scheduled battery check (up to about 30 s while sleeping).
 The LoRa receiver remains in continuous RX. No RX duty cycling is added.
 
 ### Original input behavior preserved
@@ -153,3 +156,12 @@ long sleeps. Hardware validation is required before an upstream PR:
    behavior should return. Re-enable BLE/Wi-Fi and sync; test USB insertion.
 6. Compare battery current/autonomy to test3 under matching settings and traffic.
    Compilation/host tests establish neither on-device stability nor power gain.
+
+Motion settings are already respected: `motion::apply()` streams only while
+raise-to-wake, stay-on-held, face-down-quiet or man-down needs it (subject to
+Battery saver). If none is in use, streaming stops and does not inhibit sleep.
+Turn off the two normally enabled Display motion toggles for the initial test;
+quiet-face-down and man-down should also be off if previously enabled. With
+BLE/Wi-Fi/GPS inactive, no pending work or sooner scheduled deadline, last/max
+sleep-call duration should approach 30000 ms. Radio, middle button, pending
+retry, advert, sensor/alert or GPS-window deadlines may legitimately end it sooner.

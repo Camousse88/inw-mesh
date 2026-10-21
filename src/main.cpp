@@ -13,6 +13,7 @@
 #include "power.h"
 #include "cpu_sleep.h"
 #include "sleep_deadline.h"
+#include "battery_schedule.h"
 #include "notify.h"
 #include "statusbar.h"
 #include "ota.h"
@@ -117,7 +118,7 @@ uint32_t g_shotAt = 0;
 extern char g_screenTitle[32];   // ui.cpp: the last header drawn
 static uint32_t s_prefsDirtyAt = 0, s_uiDirtyAt = 0;
 static uint32_t s_kbFlashUntil = 0;
-static uint32_t s_battRtcAt = 0, s_battFlashAt = 0;
+static uint32_t s_battFlashAt = 0;
 static bool s_radioOk = false;
 #if INW_DEV
 static regions::Scan s_usbScan;    // USB "regions scan"
@@ -2127,13 +2128,15 @@ void loop() {
     }
   }
   lap(2);
-  battery.tick(millis());
-  {   // keep the battery count through restarts (RTC, every 5 s) and power loss (flash, every 30 min)
-    if (millis() - s_battRtcAt > 5000) { s_battRtcAt = millis(); battSave(false); }
+  const uint32_t batteryInterval = batteryIntervalMs(
+    power::lightSleep() && power::cpuSaving(), dimmer.asleep());
+  const bool batteryUpdated = battery.tick(millis(), batteryInterval);
+  {   // RTC checkpoint shares the battery reading; flash still every 30 min.
+    if (batteryUpdated) battSave(false);
     if (millis() - s_battFlashAt > 30UL * 60UL * 1000UL) { s_battFlashAt = millis(); battSave(true); }
   }
   if (s_hizUntil && (int32_t)(millis() - s_hizUntil) > 0) { s_hizUntil = 0; battery.setHiZ(false); Serial.println("[batt] charger input back on"); }
-  power::tick();
+  power::tick(batteryUpdated);
   ota::tick();
   report::tick();
   ext::tick();
@@ -2247,10 +2250,9 @@ void loop() {
   // The FIFO-polled motion feature is kept intact, and inhibits long sleep.
   const uint32_t now = millis();
   SleepDeadline deadline(now);
-  deadline.limit(battery.sleepBudgetMs(now));
-  deadline.limit(power::sleepBudgetMs(now));
+  deadline.limit(battery.sleepBudgetMs(now, batteryIntervalMs(
+    power::lightSleep() && power::cpuSaving(), dimmer.asleep())));
   deadline.limit(ext::sleepBudgetMs(now));
-  deadline.after(s_battRtcAt, 5001);
   deadline.after(s_battFlashAt, 30UL * 60UL * 1000UL + 1);
   if (g_node) deadline.limit(g_node->sleepBudgetMs(now));
   if (s_bootAdvert) deadline.at(s_bootAdvert + 1);

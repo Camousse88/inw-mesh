@@ -13,8 +13,7 @@
 #include <Arduino.h>
 
 namespace power {
-  uint32_t sleepBudgetMs(uint32_t now); // preserve the 5 s battery safety checks
-  void tick();                    // from loop
+  void tick(bool batteryUpdated); // from loop, after the scheduled battery reading
 
   // Battery saver
   bool saver();

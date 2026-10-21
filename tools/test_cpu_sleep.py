@@ -71,12 +71,14 @@ inline int esp_light_sleep_start() {
 
 ''',
     'test.cpp': r'''#include <cassert>
+#include <initializer_list>
 #include <Preferences.h>
 #include <esp_sleep.h>
 #include <driver/gpio.h>
 #include "power.h"
 #include "cpu_sleep.h"
 #include "sleep_deadline.h"
+#include "battery_schedule.h"
 namespace power {
   bool saving=true;
   uint32_t mhz=80;
@@ -147,6 +149,29 @@ int main() {
   idle.deadline=now+250; assert(idleLightSleep(idle) && calls==6 && timerUs==250000);
   idle.deadline=now+60000; assert(idleLightSleep(idle) && timerUs==30000000);
   assert(setLightSleep(false) && !idleLightSleep(idle) && calls==7);
+  // Battery sampling/checkpoint share a 30-second deadline in the saving mode.
+  assert(batteryIntervalMs(true,true)==30000);
+  assert(batteryIntervalMs(false,true)==5000);
+  assert(batteryIntervalMs(true,false)==5000);
+  assert(batteryIntervalMs(false,false)==5000);
+  SleepDeadline batteryJob(120000);
+  batteryJob.after(120000,batteryIntervalMs(true,true));
+  assert(batteryJob.ms()==30000);
+  // A low-voltage minute is a minute with either 5 s or 30 s samples.
+  for (uint32_t interval : {5000u,30000u}) {
+    LowBatteryWindow low;
+    assert(!low.update(true,0));
+    for (uint32_t t=interval;t<60000;t+=interval) assert(!low.update(true,t));
+    assert(low.update(true,60000));
+    assert(!low.update(false,65000));
+    assert(!low.update(true,90000));
+    assert(!low.update(true,120000));
+    assert(low.update(true,150000));
+  }
+  LowBatteryWindow lowWrap;
+  assert(!lowWrap.update(true,0xfffffff0));
+  assert(!lowWrap.update(true,(uint32_t)(0xfffffff0u+30000u)));
+  assert(lowWrap.update(true,(uint32_t)(0xfffffff0u+60000u)));
   // Multiple real scheduler deadlines, due/past deadlines and millis wrap.
   SleepDeadline jobs(1000); jobs.after(900,5000); jobs.at(2000); assert(jobs.ms()==1000);
   jobs.at(999); assert(jobs.ms()==0);
