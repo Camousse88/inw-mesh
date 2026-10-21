@@ -323,6 +323,19 @@ bool inwStoreFlush(uint32_t ms) {
   }
 }
 
+// Hold the queue mutex across CPU light sleep so the background writer cannot
+// start flash/cache work on the other core between the idle check and sleep.
+bool inwStoreBeginSleep() {
+  if (!inw_mx) return true;
+  if (xSemaphoreTake(inw_mx, 0) != pdTRUE) return false;
+  bool idle = !inw_busy && !inw_app_len;
+  for (auto& q : inw_q) if (q.buf) idle = false;
+  if (inw_blobs) for (int i = 0; i < INW_BLOBS; i++) if (inw_blobs[i].used) idle = false;
+  if (!idle) xSemaphoreGive(inw_mx);
+  return idle;
+}
+void inwStoreEndSleep() { if (inw_mx) xSemaphoreGive(inw_mx); }
+
 // Called from the loop: reports saves the task has finished.
 void inwStoreTick() {
   if (!inw_mx || !inw_done_n) return;

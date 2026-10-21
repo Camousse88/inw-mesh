@@ -1,8 +1,8 @@
 #include "cpu_sleep.h"
 #include "power.h"
+#include "sleep_deadline.h"
 #include "board_pins.h"
 #include <Preferences.h>
-#include <initializer_list>
 #include <esp_sleep.h>
 #include <esp_timer.h>
 #include <driver/gpio.h>
@@ -10,12 +10,11 @@
 namespace power {
 namespace {
   int8_t s_enabled = -1;
-  bool s_failed = false, s_wheelWake = false;
-  uint32_t s_count = 0, s_wake = 0;
+  bool s_failed = false;
+  uint32_t s_count = 0, s_wake = 0, s_lastMs = 0, s_maxMs = 0;
   uint64_t s_micros = 0;
   const char* s_status = "not checked";
   portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
-  constexpr uint64_t SLICE_US = 30000;
 }
 bool lightSleep() {
   if (s_enabled < 0) {
@@ -38,26 +37,30 @@ bool setLightSleep(bool on) {
   s_failed = false;
   return true;
 }
-bool takeSleepWheelWake() { const bool v = s_wheelWake; s_wheelWake = false; return v; }
 const char* lightSleepStatus() { return s_status; }
 uint32_t lightSleepCount() { return s_count; }
+uint32_t lightSleepLastMs() { return s_lastMs; }
+uint32_t lightSleepMaxMs() { return s_maxMs; }
 uint64_t lightSleepMicros() { return s_micros; }
 uint32_t lightSleepWakeCause() { return s_wake; }
 
 bool idleLightSleep(const SleepInputs& in) {
   // Manual light sleep is deliberately separate from the working 80 MHz policy.
   // Never suspend I2S, GPS UART, a wireless stack or an outbound mesh operation.
+  SleepDeadline timer(millis());
+  timer.at(in.deadline);
+  const uint32_t budgetMs = timer.ms();
   const char* block = !lightSleep() ? "off" : !cpuSaving() ? "CPU saver off" :
     s_failed ? "sleep error; toggle to retry" : !in.screenOff ? "screen on" :
     millis() < 120000 ? "boot grace (2 min)" : in.usb ? "USB power" :
     in.audio ? "sound playing" : in.bluetooth ? "Bluetooth on" :
     in.wifi ? "Wi-Fi on" : in.gps ? "GPS active" :
-    !in.radioReady ? "radio not ready" : in.meshBusy ? "mesh busy" : nullptr;
+    in.motion ? "motion sensor polling" : in.background ? "background work" :
+    budgetMs < 2 ? "scheduled work due" : !in.radioReady ? "radio not ready" : in.meshBusy ? "mesh busy" : nullptr;
   if (block) { s_status = block; return false; }
   // Wake sources are level-sensitive, so a packet racing the final check will
   // wake immediately too. Do not enter with an already-pending IRQ/button.
-  if (digitalRead(PIN_LORA_DIO1) == HIGH || digitalRead(PIN_BUTTON) == LOW ||
-      digitalRead(PIN_ROTARY_PRESS) == LOW) {
+  if (digitalRead(PIN_LORA_DIO1) == HIGH || digitalRead(PIN_BUTTON) == LOW) {
     s_status = "pending IRQ/button";
     return false;
   }
@@ -66,16 +69,12 @@ bool idleLightSleep(const SleepInputs& in) {
 
   // Like MeshCore's ESP32 repeater: mask this core's ISR servicing while the
   // radio GPIO has a level wake trigger, then restore its rising-edge IRQ.
-  // No long/indefinite sleep: loop timers and polled wheel/keyboard keep their
-  // existing cadence; LoRa IRQ and the side button wake sooner.
-  const int wheelA = digitalRead(PIN_ROTARY_A), wheelB = digitalRead(PIN_ROTARY_B);
-  esp_err_t err = esp_sleep_enable_timer_wakeup(SLICE_US);
+  // Sleep until an IRQ or the earliest useful deadline, up to 30 seconds.
+  // Keyboard and wheel deliberately have NO wake trigger, matching SquatchMesh.
+  esp_err_t err = esp_sleep_enable_timer_wakeup((uint64_t)budgetMs * 1000ULL);
   portENTER_CRITICAL(&s_mux);
   if (err == ESP_OK) err = gpio_wakeup_enable((gpio_num_t)PIN_LORA_DIO1, GPIO_INTR_HIGH_LEVEL);
   if (err == ESP_OK) err = gpio_wakeup_enable((gpio_num_t)PIN_BUTTON, GPIO_INTR_LOW_LEVEL);
-  if (err == ESP_OK) err = gpio_wakeup_enable((gpio_num_t)PIN_ROTARY_PRESS, GPIO_INTR_LOW_LEVEL);
-  if (err == ESP_OK) err = gpio_wakeup_enable((gpio_num_t)PIN_ROTARY_A, wheelA ? GPIO_INTR_LOW_LEVEL : GPIO_INTR_HIGH_LEVEL);
-  if (err == ESP_OK) err = gpio_wakeup_enable((gpio_num_t)PIN_ROTARY_B, wheelB ? GPIO_INTR_LOW_LEVEL : GPIO_INTR_HIGH_LEVEL);
   if (err == ESP_OK) err = esp_sleep_enable_gpio_wakeup();
   const int64_t start = esp_timer_get_time();
   if (err == ESP_OK) err = esp_light_sleep_start();
@@ -85,12 +84,6 @@ bool idleLightSleep(const SleepInputs& in) {
   gpio_set_intr_type((gpio_num_t)PIN_LORA_DIO1, GPIO_INTR_POSEDGE);
   gpio_wakeup_disable((gpio_num_t)PIN_BUTTON);
   gpio_set_intr_type((gpio_num_t)PIN_BUTTON, GPIO_INTR_DISABLE);
-  for (const int pin : {PIN_ROTARY_PRESS, PIN_ROTARY_A, PIN_ROTARY_B}) {
-    gpio_wakeup_disable((gpio_num_t)pin);
-    gpio_set_intr_type((gpio_num_t)pin, GPIO_INTR_DISABLE);
-  }
-  s_wheelWake = digitalRead(PIN_ROTARY_A) != wheelA || digitalRead(PIN_ROTARY_B) != wheelB ||
-                digitalRead(PIN_ROTARY_PRESS) == LOW;
   portEXIT_CRITICAL(&s_mux);
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_GPIO);
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
@@ -103,7 +96,9 @@ bool idleLightSleep(const SleepInputs& in) {
   ++s_count;
   if (elapsed > 0) s_micros += (uint64_t)elapsed;
   s_wake = wake;
-  s_status = "ready (30 ms slices)";
+  s_lastMs = elapsed > 0 ? (uint32_t)(elapsed / 1000) : 0;
+  if (s_lastMs > s_maxMs) s_maxMs = s_lastMs;
+  s_status = "ready (event/deadline wake)";
   // Always yield so IDLE/tasks/watchdogs run between manual sleeps.
   delay(1);
   return true;

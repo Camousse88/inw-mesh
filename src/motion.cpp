@@ -276,6 +276,8 @@ void tick() {
   }
 }
 
+bool needsFastPolling() { return streaming; }
+
 bool running() { return streaming && millis() - lastSample < 3000; }
 
 const char* state() {

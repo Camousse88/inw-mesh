@@ -14,6 +14,7 @@
 namespace motion {
   void begin();                // setup(): loads the sensor's firmware if anything is on
   void tick();                 // loop()
+  bool needsFastPolling();     // FIFO polling is required while the sensor streams
   bool running();              // samples are coming in
   const char* state();         // "on", "off" or "not responding", for the menus and the log
   // Battery saver pauses raise to wake, quiet when face down and the lean, and stops

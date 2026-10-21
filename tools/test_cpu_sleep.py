@@ -33,16 +33,19 @@ void end() {}
 };
 ''',
     'esp_sleep.h': r'''#pragma once
+#include <cassert>
 #include <cstdint>
 using esp_err_t=int;
 constexpr int ESP_OK=0, ESP_SLEEP_WAKEUP_GPIO=7, ESP_SLEEP_WAKEUP_TIMER=4;
 inline int calls=0, result=0, configResult=0, enabledSources=0;
 inline uint64_t timerUs=0;
 inline int64_t clockUs=0;
+inline int wakeCause=ESP_SLEEP_WAKEUP_TIMER;
+inline bool injectedRadio=false;
 inline int esp_sleep_enable_timer_wakeup(uint64_t us) { timerUs=us; enabledSources|=1; return configResult; }
 inline int esp_sleep_enable_gpio_wakeup() { enabledSources|=2; return 0; }
-inline int esp_light_sleep_start() { ++calls; clockUs+=30000; return result; }
-inline int esp_sleep_get_wakeup_cause() { return ESP_SLEEP_WAKEUP_TIMER; }
+int esp_light_sleep_start();
+inline int esp_sleep_get_wakeup_cause() { return wakeCause; }
 inline void esp_sleep_disable_wakeup_source(int s) { enabledSources &= s==ESP_SLEEP_WAKEUP_TIMER ? ~1 : ~2; }
 ''',
     'esp_timer.h': r'''#pragma once
@@ -58,6 +61,14 @@ inline bool wakes[49]={};
 inline int gpio_wakeup_enable(int pin, int trigger) { wakes[pin]=true; intr[pin]=trigger; return 0; }
 inline void gpio_wakeup_disable(int pin) { wakes[pin]=false; }
 inline void gpio_set_intr_type(int pin, int trigger) { intr[pin]=trigger; }
+inline int esp_light_sleep_start() {
+  ++calls;
+  assert(wakes[14] && wakes[0]);
+  assert(!wakes[7] && !wakes[40] && !wakes[41] && !wakes[6]);
+  clockUs+=injectedRadio ? 7000 : timerUs;
+  return result;
+}
+
 ''',
     'test.cpp': r'''#include <cassert>
 #include <Preferences.h>
@@ -65,6 +76,7 @@ inline void gpio_set_intr_type(int pin, int trigger) { intr[pin]=trigger; }
 #include <driver/gpio.h>
 #include "power.h"
 #include "cpu_sleep.h"
+#include "sleep_deadline.h"
 namespace power {
   bool saving=true;
   uint32_t mhz=80;
@@ -74,7 +86,7 @@ namespace power {
 }
 int main() {
   using namespace power;
-  SleepInputs idle{true,false,false,false,false,false,false,true};
+  SleepInputs idle{true,false,false,false,false,false,false,true,false,false,150000};
   assert(!lightSleep()); assert(!idleLightSleep(idle) && calls==0);
   writable=false; assert(!setLightSleep(true) && !lightSleep());
   writable=true; shortWrite=true; assert(!setLightSleep(true) && !lightSleep());
@@ -83,7 +95,7 @@ int main() {
   now=120000;
   saving=false; assert(!idleLightSleep(idle)); saving=true;
   // Each unsafe input independently blocks sleep.
-  for(int i=0;i<8;++i) {
+  for(int i=0;i<10;++i) {
     auto blocked=idle;
     switch(i) {
       case 0: blocked.screenOff=false; break;
@@ -94,20 +106,22 @@ int main() {
       case 5: blocked.gps=true; break;
       case 6: blocked.meshBusy=true; break;
       case 7: blocked.radioReady=false; break;
+      case 8: blocked.motion=true; break;
+      case 9: blocked.background=true; break;
     }
     assert(!idleLightSleep(blocked) && calls==0);
   }
   radioLevel=1; assert(!idleLightSleep(idle)); radioLevel=0;
   buttonLevel=0; assert(!idleLightSleep(idle)); buttonLevel=1;
-  wheelPress=0; assert(!idleLightSleep(idle)); wheelPress=1;
+  wheelPress=0; wheelA=0; wheelB=0; // ignored pocket input must not block sleep
   mhz=240; assert(!idleLightSleep(idle)); mhz=80;
   assert(idleLightSleep(idle));
-  assert(calls==1 && yields==1 && timerUs==30000);
-  assert(lightSleepCount()==1 && lightSleepMicros()==30000);
+  assert(calls==1 && yields==1 && timerUs==30000000);
+  assert(lightSleepCount()==1 && lightSleepMicros()==30000000);
   assert(lightSleepWakeCause()==ESP_SLEEP_WAKEUP_TIMER);
   assert(!wakes[14] && !wakes[0] && intr[14]==GPIO_INTR_POSEDGE && intr[0]==GPIO_INTR_DISABLE);
   assert(!wakes[7] && !wakes[40] && !wakes[41]);
-  assert(!takeSleepWheelWake());
+  assert(lightSleepLastMs()==30000 && lightSleepMaxMs()==30000);
   assert(enabledSources==0);
   // Playback temporarily blocks sleep, then allows it again without a reset.
   auto sound=idle; sound.audio=true;
@@ -120,7 +134,24 @@ int main() {
   configResult=99; assert(!idleLightSleep(idle) && calls==3 && enabledSources==0);
   configResult=0; assert(setLightSleep(true));
   assert(idleLightSleep(idle) && calls==4);
-  assert(setLightSleep(false) && !idleLightSleep(idle) && calls==4);
+  // An IRQ ends a long sleep early without changing the CPU clock.
+  injectedRadio=true; wakeCause=ESP_SLEEP_WAKEUP_GPIO;
+  idle.deadline=125000;
+  assert(idleLightSleep(idle) && calls==5 && timerUs==5000000);
+  assert(lightSleepLastMs()==7 && lightSleepMaxMs()==30000 && mhz==80);
+  assert(lightSleepWakeCause()==ESP_SLEEP_WAKEUP_GPIO);
+  injectedRadio=false;
+  // Deadline already due, or due during preparation: do not oversleep.
+  idle.deadline=now; assert(!idleLightSleep(idle) && calls==5);
+  idle.deadline=now+1; assert(!idleLightSleep(idle) && calls==5);
+  idle.deadline=now+250; assert(idleLightSleep(idle) && calls==6 && timerUs==250000);
+  idle.deadline=now+60000; assert(idleLightSleep(idle) && timerUs==30000000);
+  assert(setLightSleep(false) && !idleLightSleep(idle) && calls==7);
+  // Multiple real scheduler deadlines, due/past deadlines and millis wrap.
+  SleepDeadline jobs(1000); jobs.after(900,5000); jobs.at(2000); assert(jobs.ms()==1000);
+  jobs.at(999); assert(jobs.ms()==0);
+  SleepDeadline wrap(0xfffffff0); wrap.after(0xfffffff0,100); assert(wrap.ms()==100);
+  wrap.at(0xffffffe0); assert(wrap.ms()==0);
 }
 ''',
 }

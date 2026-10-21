@@ -67,6 +67,8 @@ public:
   InwNode(mesh::Radio& radio, mesh::RNG& rng, mesh::RTCClock& rtc,
           SimpleMeshTables& tables, DataStore& store);
 
+  uint32_t sleepBudgetMs(uint32_t now) const; // DM retries and login timeout
+
   void (*onEvent)(NodeEvent e, const void* arg) = nullptr;
 
   // -- sending ----------------------------------------------------------------

@@ -12,6 +12,7 @@
 #include <soc/rtc_cntl_reg.h>
 #include "power.h"
 #include "cpu_sleep.h"
+#include "sleep_deadline.h"
 #include "notify.h"
 #include "statusbar.h"
 #include "ota.h"
@@ -116,6 +117,7 @@ uint32_t g_shotAt = 0;
 extern char g_screenTitle[32];   // ui.cpp: the last header drawn
 static uint32_t s_prefsDirtyAt = 0, s_uiDirtyAt = 0;
 static uint32_t s_kbFlashUntil = 0;
+static uint32_t s_battRtcAt = 0, s_battFlashAt = 0;
 static bool s_radioOk = false;
 #if INW_DEV
 static regions::Scan s_usbScan;    // USB "regions scan"
@@ -228,6 +230,8 @@ void app::applyTheme() {
 // these wait for it, and report what it finished.
 bool inwStoreFlush(uint32_t ms);
 void inwStoreTick();
+bool inwStoreBeginSleep();
+void inwStoreEndSleep();
 void inwSetUserBusy(bool busy);
 
 static uint32_t s_hizUntil = 0;   // "batt hiz" test running until then
@@ -871,6 +875,8 @@ static void usbCommands() {
                     (unsigned long)power::lightSleepCount(),
                     (unsigned long long)(power::lightSleepMicros() / 1000),
                     (unsigned long)power::lightSleepWakeCause());
+      Serial.printf("[sleep] last_ms=%lu max_ms=%lu\r\n",
+                    (unsigned long)power::lightSleepLastMs(), (unsigned long)power::lightSleepMaxMs());
       continue;
     }
     // The browser installer sends this before it resets the pager, so nothing
@@ -1968,12 +1974,12 @@ static void gpsTick() {
   }
 }
 
+static uint32_t s_bootAdvert = 8000, s_lastAdvert = 0;
 static void autoAdvertTick() {
-  static uint32_t bootAdvert = 8000, last = 0;
   if (!g_node) return;
-  if (bootAdvert && millis() > bootAdvert) { bootAdvert = 0; g_node->advertZeroHop(); last = millis(); }
-  if (ui_settings.autoAdvertHours && millis() - last > ui_settings.autoAdvertHours * 3600000UL) {
-    last = millis();
+  if (s_bootAdvert && millis() > s_bootAdvert) { s_bootAdvert = 0; g_node->advertZeroHop(); s_lastAdvert = millis(); }
+  if (ui_settings.autoAdvertHours && millis() - s_lastAdvert > ui_settings.autoAdvertHours * 3600000UL) {
+    s_lastAdvert = millis();
     g_node->advertFlood();
     logs.add(LOG_INFO, "auto flood advert");
   }
@@ -2123,9 +2129,8 @@ void loop() {
   lap(2);
   battery.tick(millis());
   {   // keep the battery count through restarts (RTC, every 5 s) and power loss (flash, every 30 min)
-    static uint32_t rtcAt = 0, flashAt = 0;
-    if (millis() - rtcAt > 5000) { rtcAt = millis(); battSave(false); }
-    if (millis() - flashAt > 30UL * 60UL * 1000UL) { flashAt = millis(); battSave(true); }
+    if (millis() - s_battRtcAt > 5000) { s_battRtcAt = millis(); battSave(false); }
+    if (millis() - s_battFlashAt > 30UL * 60UL * 1000UL) { s_battFlashAt = millis(); battSave(true); }
   }
   if (s_hizUntil && (int32_t)(millis() - s_hizUntil) > 0) { s_hizUntil = 0; battery.setHiZ(false); Serial.println("[batt] charger input back on"); }
   power::tick();
@@ -2238,18 +2243,41 @@ void loop() {
   // Screen state is the only CPU policy input. Notifications, sound and radio
   // work all stay at 80 MHz while the screen is off, when saving is enabled.
   power::updateCpu(dimmer.asleep());
-  // Recheck VBUS just before sleeping, not only the battery's cached poll.
-  // Bluetooth's controller is suspended only when its user setting is OFF.
+  // Keep the original screen-wake policy above: no keyboard/wheel wake here.
+  // The FIFO-polled motion feature is kept intact, and inhibits long sleep.
+  const uint32_t now = millis();
+  SleepDeadline deadline(now);
+  deadline.limit(battery.sleepBudgetMs(now));
+  deadline.limit(power::sleepBudgetMs(now));
+  deadline.limit(ext::sleepBudgetMs(now));
+  deadline.after(s_battRtcAt, 5001);
+  deadline.after(s_battFlashAt, 30UL * 60UL * 1000UL + 1);
+  if (g_node) deadline.limit(g_node->sleepBudgetMs(now));
+  if (s_bootAdvert) deadline.at(s_bootAdvert + 1);
+  if (ui_settings.autoAdvertHours)
+    deadline.after(s_lastAdvert, ui_settings.autoAdvertHours * 3600000UL + 1);
+  if (ui_settings.gpsOn && !power::saver() && !s_gpsRail)
+    deadline.limit(1800000UL - now % 1800000UL); // next GPS window
+  if (s_hizUntil) deadline.at(s_hizUntil + 1);
+  if (g_shotAt) deadline.at(g_shotAt);
+  const bool foreground = !s_panelOff || backlight.fading() || nav.overlayActive() ||
+    s_kbFlashUntil || s_prefsDirtyAt || s_uiDirtyAt || field::wantsGps();
   power::SleepInputs idle{dimmer.asleep(), jingle.playing(), battery.pluggedIn(),
     bleEnabled(), wifi::enabled(), s_gpsRail,
-    g_node && (g_node->hasPendingWork() || !radio_driver.isInRecvMode()), s_radioOk};
-  if (power::lightSleep() && power::cpuSaving() && idle.screenOff && !idle.audio &&
-      !idle.bluetooth && !idle.wifi && !idle.gps && idle.radioReady && !idle.meshBusy &&
-      millis() >= 120000) {
-    idle.usb = battery.pollVbus() || (bool)Serial; // also protect a live USB console
-    if (!idle.usb) idle.bluetooth = !blePrepareLightSleep();
+    g_node && (g_node->hasPendingWork() || !radio_driver.isInRecvMode()), s_radioOk,
+    motion::needsFastPolling(), foreground, now + deadline.ms()};
+  const bool candidate = power::lightSleep() && power::cpuSaving() && idle.screenOff &&
+    !idle.audio && !idle.bluetooth && !idle.wifi && !idle.gps && idle.radioReady &&
+    !idle.meshBusy && !idle.motion && !idle.background && deadline.ms() >= 2 && now >= 120000;
+  bool storeHeld = false;
+  if (candidate) {
+    idle.usb = battery.pollVbus() || (bool)Serial;
+    if (!idle.usb) {
+      idle.bluetooth = !blePrepareLightSleep();
+      if (!idle.bluetooth) { storeHeld = inwStoreBeginSleep(); idle.background = !storeHeld; }
+    }
   }
-  if (!power::idleLightSleep(idle))
-    delay(dimmer.asleep() && !jingle.playing() && !bleConnected() ? 30 : 2);
-  if (power::takeSleepWheelWake()) dimmer.note(); // PCNT is clock-gated in light sleep
+  const bool slept = power::idleLightSleep(idle);
+  if (storeHeld) inwStoreEndSleep();
+  if (!slept) delay(dimmer.asleep() && !jingle.playing() && !bleConnected() ? 30 : 2);
 }

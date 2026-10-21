@@ -41,7 +41,7 @@ official OTA URL or signing keys, so an official update can replace the test bui
 
 ### MeshCore web flasher / Custom Firmware
 
-Use **SquatchMesh-1.2.14-cpu-test4-Pager-merged.bin**, not the application-only
+Use **SquatchMesh-1.2.14-cpu-test5-Pager-merged.bin**, not the application-only
 file, for a full install. The merged image includes the 16 MB bootloader,
 partition table, blank OTA-selection data (selecting app0), and the application.
 It also covers NVS with blank bytes: back up settings and identity first.
@@ -50,7 +50,7 @@ selects a full erase with a warning. This wipes on-device identity, contacts,
 settings and messages; export/SD backup is required if they need to be kept.
 An application-only image at 0x10000 does not switch a device booting app1 to
 app0, and cannot boot an erased device. Never erase when flashing an app-only file.
-Check Settings > System > version for `1.2.14-cpu-test4` after installing.
+Check Settings > System > version for `1.2.14-cpu-test5` after installing.
 
 ### Hardware validation
 
@@ -78,52 +78,78 @@ Check Settings > System > version for `1.2.14-cpu-test4` after installing.
 Test3: CPU status/log lines use CRLF for compatibility with the MeshCore web
 console. The `cpu` command no longer needs a following `themes` command.
 
-## Test4: manual CPU light sleep (experimental)
+## Test5: CPU sleep until an event or scheduled work (experimental)
 
 Settings > Battery > **CPU light sleep** is a separate opt-in, persisted in
 `inw-cpu/light` (also absent from exported UI backups). Enable **CPU power
-saving** as well. With the screen off, awake work stays at 80 MHz; screen wake
-restores the boot clock (240 MHz on this Pager build).
+saving** as well. Awake work stays at 80 MHz with the logical screen off;
+screen wake restores the boot clock (240 MHz on this build).
 
-After a 2-minute boot grace period, idle loop intervals can use
-`esp_light_sleep_start()` for at most 30 ms. The LoRa receiver is never put to
-sleep or RX duty-cycled. Its DIO1 IRQ wakes the CPU; a pending high IRQ prevents
-entry. The side button and wheel also wake it; a wheel edge wakes the logical
-screen because PCNT does not count while asleep. Keyboard FIFO and motion are
-polled on the short timer. The radio GPIO's rising-edge IRQ is restored after
-each attempt. No RAM/flash power-down is forced. There is a FreeRTOS yield
-between attempts; a sleep error disables further attempts until the toggle is
-changed. The elapsed counter includes the measured sleep-call overhead, not a
-precise measurement of time with CPU clocks stopped.
+The 30 ms sleep slices of test4 are removed. After the 2-minute boot grace,
+`esp_light_sleep_start()` sleeps until the LoRa DIO1 IRQ, the middle/side button
+(GPIO0), or the earliest useful deadline. Sleep is capped at 30 seconds, as in
+MeshCore/EasySkyMesh ESP32 repeaters. On the Pager the existing battery refresh,
+critical-battery checks and RTC battery checkpoint normally limit it to around
+5 seconds. A radio IRQ or button can wake it immediately in that interval.
+Deadlines use signed millis differences and are rechecked after preparation.
+Pending DM retries/login, adverts, GPS window starts, external sensor readings
+and alert-output edges can require an earlier timer wake. USB insertion can be
+noticed on the next scheduled battery check (up to about 5 s while sleeping).
+The LoRa receiver remains in continuous RX. No RX duty cycling is added.
 
-Sleep is inhibited while the screen is on, USB/VBUS is present, sound plays,
-Bluetooth is enabled (including advertising), Wi-Fi is enabled (including
-joining/scanning), the GPS rail is powered, the radio is not ready/in receive
-mode, or MeshCore reports pending work. Other synchronous tasks finish before
-sleep is attempted; scheduled work still runs on periodic loop wakeups.
+### Original input behavior preserved
 
-For the initial test, turn Bluetooth and Wi-Fi OFF in Settings and unplug USB.
-GPS may be off or between the existing background GPS windows. When Bluetooth
-is OFF, the disabled service's Bluedroid host and controller are also suspended
-before sleeping: merely stopping advertising is insufficient. Re-enabling
-Bluetooth resumes the existing controller/host before the service; bonds are
-not erased. Neither light-sleep nor CPU-saving toggles automatically change
-user radio/GPS settings. This version does not maintain BLE/Wi-Fi connections
-through light sleep; that requires a different automatic-sleep/IDF build.
+Verified against SquatchMesh 1.2.14 (`8ef76e1`, `src/main.cpp`): once the logical
+screen is OFF, keyboard and wheel input is discarded. There is no additional
+long-inactivity threshold. The middle/side button wakes the screen; raise to
+wake can also do so if enabled. Notification wake follows the existing option.
+Test4's added wheel wake has been removed. Keyboard, wheel rotation and wheel
+press have no sleep wake source and do not inhibit sleep if held. On subsequent
+radio/timer/button wake, the original loop drains and ignores their buffered
+input while dark. CPU timer/radio wakes do not themselves light the screen.
 
-Battery shows the sleep count and elapsed milliseconds since boot. Let the
-screen sleep on battery for a minute after the boot grace period, then open
-Battery and verify the counters increased. While inspecting the menu the state
-will correctly say `screen on`. The USB `cpu` command reports the same counters
-and last wake cause; USB inhibits new sleeps but does not clear prior counters.
+The original BHI260AP motion features poll its FIFO every 40 ms. This build
+preserves that behavior and **inhibits long sleep while the IMU is streaming**,
+instead of silently removing raise-to-wake, face-down quiet or man-down.
+To test long sleep, turn off raise to wake and stay on while held in
+Settings > Display, quiet when face down in Settings > Sound, and man-down
+in Tools > Field > SOS beacon if enabled. Battery saver also
+pauses motion except an enabled man-down alarm. The sleep state displays
+`motion sensor polling` if this is the blocker. Supporting motion while sleeping
+requires a separate event-driven sensor change and is not claimed here.
 
-Required hardware checks, not established by host tests or compilation:
-- Repeated radio/button/wheel/keyboard/raise-to-wake cycles, without resets.
-- Messages with screen wake disabled: receive/ACK/retry and complete sound at
-  80 MHz, then subsequent sleep cycles; bursts at the actual configured SF/BW.
-- Re-enable Bluetooth after accumulated sleep cycles; reconnect and sync the
-  phone. Repeat enabling Wi-Fi, GPS and plugging/unplugging USB. Confirm sleep
-  counters stop for each blocking feature and resume after it stops.
-- SD writes, automatic adverts and scheduled alarms continue correctly.
-- Compare to test3 with identical settings and traffic on battery. No measured
-  autonomy gain or on-device stability claim is made for this build yet.
+### Guards and observations
+
+Sleep is also inhibited by the screen/USB, audio playback, enabled BLE/Wi-Fi,
+GPS rail power, pending mesh work, unfinished backlight/panel shutdown,
+notifications/effects, pending settings saves and active field tools.
+The background store must be idle; its queue mutex is held across sleep so
+another core cannot begin flash work during entry. Synchronous work completes
+before the attempt. GPIO wake configuration is removed and the radio's rising
+edge ISR configuration is restored after each attempt. No flash/PSRAM power-down
+is forced. A FreeRTOS yield follows wake. On sleep failure, attempts stop until
+the option is toggled.
+
+As in test4, with Bluetooth explicitly OFF the inactive Bluedroid host and
+controller are suspended before sleeping and resumed before Bluetooth is
+re-enabled. Bonds are kept. BLE/Wi-Fi connections are not maintained through
+manual light sleep. Radio/GPS/motion preferences are not changed automatically.
+
+Battery and USB `cpu` show count, accumulated elapsed milliseconds, last and
+longest measured sleep-call duration and wake cause. The measurement includes
+entry/exit overhead. USB inhibits new sleeps but keeps prior counters. In Battery
+the current state will say `screen on`; inspect last/max durations to confirm
+long sleeps. Hardware validation is required before an upstream PR:
+
+1. With CPU options OFF, compare input behavior to official firmware.
+2. With both options ON, motion/BLE/Wi-Fi OFF and USB unplugged, after the 2-minute
+   grace period leave it dark for a minute. Keyboard/wheel must not light it.
+   The middle button must wake it immediately. Last/max should be seconds.
+3. With message-screen wake OFF, verify messages/ACKs/retries and sound at 80 MHz,
+   followed by new sleeps. With message-screen wake ON, verify screen wake.
+4. Verify automatic adverts, battery reading/checkpoint, queued saves, external
+   sensor/alert output and GPS window boundaries continue on schedule.
+5. Re-enable motion: long sleep should stop and original raise-to-wake/man-down
+   behavior should return. Re-enable BLE/Wi-Fi and sync; test USB insertion.
+6. Compare battery current/autonomy to test3 under matching settings and traffic.
+   Compilation/host tests establish neither on-device stability nor power gain.

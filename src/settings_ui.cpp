@@ -983,10 +983,13 @@ static void batteryMenu() {
   m->toggle("CPU light sleep", [] { return power::lightSleep(); }, [] {
     if (!power::setLightSleep(!power::lightSleep())) nav.toast("could not save sleep setting");
   });
-  m->info("light sleep needs", []() -> String { return String("CPU saver on; USB, BLE, Wi-Fi off"); });
+  m->info("light sleep needs", []() -> String { return String("CPU saver on; USB, BLE, Wi-Fi, motion off"); });
   m->info("light sleep state", []() -> String { return String(power::lightSleepStatus()); });
   m->info("sleep cycles / ms", []() -> String {
     return String(power::lightSleepCount()) + " / " + String((unsigned long)(power::lightSleepMicros() / 1000));
+  });
+  m->info("sleep last / max ms", []() -> String {
+    return String(power::lightSleepLastMs()) + " / " + String(power::lightSleepMaxMs());
   });
   m->info("CPU clock", []() -> String { return String(power::cpuClockMhz()) + " MHz"; });
   m->info("CPU saver does", []() -> String { return String("80 MHz with screen off; radios stay on"); });

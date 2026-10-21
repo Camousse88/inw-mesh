@@ -1,4 +1,5 @@
 #include "power.h"
+#include "sleep_deadline.h"
 #include <math.h>
 #include "app.h"
 #include "battery.h"
@@ -200,16 +201,23 @@ static void criticalPowerOff() {
   if (lowRuns >= 12) app::powerOff("battery empty");     // 12 x 5 s
 }
 
+static uint32_t s_lastMaintenance = 0;
+uint32_t sleepBudgetMs(uint32_t now) {
+  SleepDeadline next(now);
+  if (battery.present() && battery.hasReading()) next.after(s_lastMaintenance, 5001);
+  return next.ms();
+}
+
 void tick() {
-  static uint32_t last = 0, lastPoll = 0;
+  static uint32_t lastPoll = 0;
   if (!battery.present() || !battery.hasReading() || millis() < 15000) return;
   bool changed = false;
   if (millis() - lastPoll > 500) {
     lastPoll = millis();
     changed = battery.pollVbus() != s_plugged;
   }
-  if (!changed && millis() - last < 5000) return;
-  last = millis();
+  if (!changed && millis() - s_lastMaintenance < 5000) return;
+  s_lastMaintenance = millis();
   chargeTick();
   saverTick();
   lowBatterySave();

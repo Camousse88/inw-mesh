@@ -73,6 +73,11 @@ public:
     // Cached: the status bar asks every frame and I2C at 400 kHz is not free.
     // The bus is shared with the keyboard, expander and codec, so a read fails
     // now and then; keep the last good value instead of showing 0%.
+    uint32_t sleepBudgetMs(uint32_t now) const {
+        if (!_gauge) return 30000;
+        const uint32_t elapsed = now - _last;
+        return !_last || elapsed >= REFRESH_MS ? 0 : REFRESH_MS - elapsed;
+    }
     void tick(uint32_t now) {
         if (!_gauge || (now - _last < REFRESH_MS && _last)) return;
         _last = now;

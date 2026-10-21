@@ -1,5 +1,6 @@
 #include "node.h"
 #include "history.h"
+#include "sleep_deadline.h"
 #include <SPIFFS.h>
 #include <esp_bt.h>
 #include <esp_bt_main.h>
@@ -147,6 +148,13 @@ bool InwNode::sendDM(const uint8_t* pub, const char* text, uint32_t histId) {
 
 bool InwNode::resendDM(const uint8_t* pub, const char* text, uint32_t histId) {
   return sendDM(pub, text, histId);
+}
+
+uint32_t InwNode::sleepBudgetMs(uint32_t now) const {
+  SleepDeadline next(now);
+  for (const auto& p : _pending) if (p.used) next.at(p.deadline);
+  if (_loginState == 1) next.at(_loginDeadline);
+  return next.ms();
 }
 
 void InwNode::tick() {
