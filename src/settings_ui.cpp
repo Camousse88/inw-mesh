@@ -977,26 +977,6 @@ extern Battery battery;
 
 static void batteryMenu() {
   auto* m = new MenuView("Battery");
-  m->toggle("CPU power saving", [] { return power::cpuSaving(); }, [] {
-    if (!power::setCpuSaving(!power::cpuSaving())) nav.toast("could not save CPU setting");
-  });
-  m->toggle("CPU light sleep", [] { return power::lightSleep(); }, [] {
-    if (!power::setLightSleep(!power::lightSleep())) nav.toast("could not save sleep setting");
-  });
-  m->info("light sleep needs", []() -> String { return String("CPU saver on; USB, BLE, Wi-Fi off"); });
-  m->info("motion sleep", []() -> String { return String(motion::sleepState()); });
-  m->info("raise in light sleep", []() -> String { return String("paused; use middle button"); });
-  m->info("battery in light sleep", []() -> String { return String("check every 30 s while screen off"); });
-  m->info("light sleep state", []() -> String { return String(power::lightSleepStatus()); });
-  m->info("sleep cycles / ms", []() -> String {
-    return String(power::lightSleepCount()) + " / " + String((unsigned long)(power::lightSleepMicros() / 1000));
-  });
-  m->info("sleep last / max ms", []() -> String {
-    return String(power::lightSleepLastMs()) + " / " + String(power::lightSleepMaxMs());
-  });
-  m->info("CPU clock", []() -> String { return String(power::cpuClockMhz()) + " MHz"; });
-  m->info("CPU saver does", []() -> String { return String("80 MHz with screen off; radios stay on"); });
-  m->info("test build", []() -> String { return String(FW_VERSION); });
   m->header("battery");
   m->info("charge", []() -> String {
     String s = String(app::batteryPct()) + "%  " + String(app::batteryMv()) + " mV";
@@ -1027,6 +1007,23 @@ static void batteryMenu() {
   m->adjust("turn on at", []() -> String { return String(ui_settings.saverPct) + "%"; },
             [](int d) { ui_settings.saverPct = constrain(ui_settings.saverPct + d * 5, 5, 50); markUiDirty(); });
   m->info("what it does", []() -> String { return String("gps, bluetooth, wi-fi off, dim screen"); });
+  m->toggle("screen-off power saving", [] {
+    return power::cpuSaving() && power::lightSleep();
+  }, [] {
+    const bool wasCpu = power::cpuSaving(), wasSleep = power::lightSleep();
+    const bool on = !(wasCpu && wasSleep);
+    // Keep the existing preferences for compatibility; one menu action controls
+    // both. Restore the first preference if the second write is refused.
+    if (!power::setLightSleep(on)) {
+      nav.toast("could not save power setting");
+      return;
+    }
+    if (!power::setCpuSaving(on)) {
+      power::setLightSleep(wasSleep);
+      nav.toast("could not save power setting");
+    }
+  });
+  m->info("what it does", []() -> String { return String("sleep CPU, keep messages"); });
   nav.push(m);
 }
 

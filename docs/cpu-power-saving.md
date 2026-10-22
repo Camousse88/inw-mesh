@@ -1,7 +1,10 @@
 # Experimental CPU power saving (T-LoRa Pager)
 
-Settings > Battery > CPU power saving is off by default and persists across
-reboots in the `inw-cpu/saving` NVS key. It is independent of Battery saver:
+Settings > Battery > battery saver > **screen-off power saving** is the single
+user-facing control for CPU downclocking and light sleep. Its short description
+is "sleep CPU, keep messages". It turns both existing preferences on/off together;
+`inw-cpu/saving` and `inw-cpu/light` are retained for compatibility, including an
+already enabled test9 installation. It is off by default. It is independent of Battery saver:
 enabling it does not change GPS, Bluetooth, Wi-Fi, radio settings or loop delays.
 The existing UI settings blob is unchanged, including its backup format.
 The new CPU preference is not part of exported UI settings backups.
@@ -42,7 +45,7 @@ official OTA URL or signing keys, so an official update can replace the test bui
 
 ### MeshCore web flasher / Custom Firmware
 
-Use **SquatchMesh-1.2.14-cpu-test9-Pager-merged.bin**, not the application-only
+Use **SquatchMesh-1.2.14-cpu-test10-Pager-merged.bin**, not the application-only
 file, for a full install. The merged image includes the 16 MB bootloader,
 partition table, blank OTA-selection data (selecting app0), and the application.
 It also covers NVS with blank bytes: back up settings and identity first.
@@ -51,7 +54,7 @@ selects a full erase with a warning. This wipes on-device identity, contacts,
 settings and messages; export/SD backup is required if they need to be kept.
 An application-only image at 0x10000 does not switch a device booting app1 to
 app0, and cannot boot an erased device. Never erase when flashing an app-only file.
-Check Settings > System > version for `1.2.14-cpu-test9` after installing.
+Check Settings > System > version for `1.2.14-cpu-test10` after installing.
 
 ### Hardware validation
 
@@ -81,9 +84,16 @@ console. The `cpu` command no longer needs a following `themes` command.
 
 ## Test9: CPU sleep until an event or scheduled work (experimental)
 
-Settings > Battery > **CPU light sleep** is a separate opt-in, persisted in
-`inw-cpu/light` (also absent from exported UI backups). Enable **CPU power
-saving** as well. Awake work stays at 80 MHz with the logical screen off;
+Test10 replaces the two experimental toggles and diagnostic rows with the
+single **screen-off power saving** toggle, alongside the existing Battery saver.
+The description is directly below it. USB `cpu`/`motion` diagnostics remain
+available; System already displays the firmware version. Both preferences are
+absent from exported UI backups. An incomplete old pair is shown OFF; enabling
+it synchronizes both to ON. Disabling turns both OFF. The second-write failure
+path attempts to restore the first preference and reports the failure.
+
+This is a menu change; the test9 sleep, radio, motion and alert algorithms remain
+the same. Awake work stays at 80 MHz with the logical screen off;
 screen wake restores the boot clock (240 MHz on this build).
 
 The 30 ms sleep slices of test4 are removed, and test5's 5-second battery limit is removed. After the 2-minute boot grace,
