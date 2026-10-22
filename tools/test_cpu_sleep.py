@@ -88,7 +88,7 @@ namespace power {
 }
 int main() {
   using namespace power;
-  SleepInputs idle{true,false,false,false,false,false,false,true,false,false,false,150000};
+  SleepInputs idle{true,false,false,false,false,false,false,true,false,false,false,false,150000};
   assert(!lightSleep()); assert(!idleLightSleep(idle) && calls==0);
   writable=false; assert(!setLightSleep(true) && !lightSleep());
   writable=true; shortWrite=true; assert(!setLightSleep(true) && !lightSleep());
@@ -97,7 +97,7 @@ int main() {
   now=120000;
   saving=false; assert(!idleLightSleep(idle)); saving=true;
   // Each unsafe input independently blocks sleep.
-  for(int i=0;i<10;++i) {
+  for(int i=0;i<11;++i) {
     auto blocked=idle;
     switch(i) {
       case 0: blocked.screenOff=false; break;
@@ -110,6 +110,7 @@ int main() {
       case 7: blocked.radioReady=false; break;
       case 8: blocked.motion=true; break;
       case 9: blocked.background=true; break;
+      case 10: blocked.nfc=true; break;
     }
     assert(!idleLightSleep(blocked) && calls==0);
   }

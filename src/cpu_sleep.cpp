@@ -55,7 +55,7 @@ bool idleLightSleep(const SleepInputs& in) {
     millis() < 120000 ? "boot grace (2 min)" : in.usb ? "USB power" :
     in.audio ? "sound playing" : in.bluetooth ? "Bluetooth on" :
     in.wifi ? "Wi-Fi on" : in.gps ? "GPS active" :
-    in.motion ? "motion sensor polling" : in.background ? "background work" :
+    in.motion ? "motion sensor polling" : in.nfc ? "NFC active" : in.background ? "background work" :
     budgetMs < 2 ? "scheduled work due" : !in.radioReady ? "radio not ready" : in.meshBusy ? "mesh busy" : nullptr;
   if (block) { s_status = block; return false; }
   // Wake sources are level-sensitive, so a packet racing the final check will

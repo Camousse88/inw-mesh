@@ -26,6 +26,7 @@ switching, with an opt-in setting and the pager's existing 30 ms idle delay.
 python tools/test_cpu_power.py
 python tools/test_cpu_sleep.py
 python tools/test_motion_sleep.py
+python tools/test_sleep_integration.py
 pio run -e t-lora-pager
 ```
 
@@ -45,7 +46,7 @@ official OTA URL or signing keys, so an official update can replace the test bui
 
 ### MeshCore web flasher / Custom Firmware
 
-Use **SquatchMesh-1.2.14-cpu-test10-Pager-merged.bin**, not the application-only
+Use **SquatchMesh-1.2.14-cpu-test11-Pager-merged.bin**, not the application-only
 file, for a full install. The merged image includes the 16 MB bootloader,
 partition table, blank OTA-selection data (selecting app0), and the application.
 It also covers NVS with blank bytes: back up settings and identity first.
@@ -54,7 +55,7 @@ selects a full erase with a warning. This wipes on-device identity, contacts,
 settings and messages; export/SD backup is required if they need to be kept.
 An application-only image at 0x10000 does not switch a device booting app1 to
 app0, and cannot boot an erased device. Never erase when flashing an app-only file.
-Check Settings > System > version for `1.2.14-cpu-test10` after installing.
+Check Settings > System > version for `1.2.14-cpu-test11` after installing.
 
 ### Hardware validation
 
@@ -207,3 +208,39 @@ but retains counters. Hardware checks required before an upstream PR:
 6. Enable man-down: long sleep must stop; original alarm behavior must remain.
 7. Compare battery-side current/autonomy with test7 under matching conditions.
    Compilation and simulated tests establish neither hardware stability nor gain.
+
+## Test11: integration with official SquatchMesh 1.2.14
+
+The CPU policy and the single Battery > battery saver > CPU : power saving
+control remain the same. Three compatibility fixes follow the audit:
+
+- Battery I2C reads still occur every 30 s while screen-off saving is selected.
+  The original 5 s model is advanced once per elapsed 5 s tick using the latest
+  readings, so a 30 s reading performs six math updates, not six bus reads.
+  This preserves voltage filtering, remaining-capacity drift and the display's
+  monotonic percentage rate, instead of slowing them sixfold. Catch-up is capped
+  at 100 model ticks after an exceptional long stall. The coulomb counter is read
+  and integrated only once. Critical shutdown still confirms low readings over
+  60 s; a 30 s sampler can detect a threshold later by up to its reading cadence.
+- InwNode captures its free packet-pool baseline after the MeshCore constructor.
+  Sleep's radio guard now checks both MyMesh::hasPendingWork() and missing free
+  slots. A delayed incoming packet or manually held packet therefore blocks long
+  sleep until ALL slots have returned. Existing outbound/dirty-contact behavior
+  is retained. No MeshCore dependency patch, radio timing change or RX tuning
+  change is required. This conservatively stays awake during delayed RX rather
+  than trying to sleep between internal queue deadlines.
+- NFC read/write/tag-emulation sessions report an active state to the sleep gate.
+  CPU light sleep is inhibited with status `NFC active` until the session closes.
+  No NFC wake source is added. A session hidden beneath the lock page is still
+  active until its NFC page is closed; it cannot be mistaken for an idle chip.
+  Builds without NFC use a false inline stub and need no NFC link dependency.
+
+The integration test compiles the real Battery header, the real sleep gate,
+production node constructor/radio guard and NFC active getter against hardware
+fakes. It checks 5 s vs. 30 s model equivalence, one I2C group per reading,
+monotonic charge display, millis wrap, a near-empty battery's display/shutdown
+schedule, multiple allocated RX packets, existing outbound/dirty guards, NFC
+read/write/emulation and closing, and the no-NFC stub. It does not establish
+hardware radio/NFC reliability. On the Pager, verify delayed flood reception
+with a nonzero RX delay base, NFC phone taps while dark with automatic locking
+disabled, closing the NFC page then resuming sleep, and a normal battery discharge.

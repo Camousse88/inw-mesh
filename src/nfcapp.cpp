@@ -12,6 +12,7 @@
 #include <ndef_class.h>
 #include <demo_ce.h>
 #include "app.h"
+#include "nfcapp.h"
 #include "node.h"
 #include "netwifi.h"
 #include "haptic.h"
@@ -434,6 +435,8 @@ String channelLink(int idx) {
 }
 
 }  // namespace
+
+bool app::nfcActive() { return s_mode != Mode::Off; }
 
 // ---- screens ------------------------------------------------------------------------------------
 class NfcReadView : public View {

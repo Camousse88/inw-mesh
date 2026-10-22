@@ -63,11 +63,14 @@ struct PendingDM {
 };
 
 class InwNode : public MyMesh {
+  int _idlePacketCount = 0;     // free pool at construction, before any RX/TX
+
 public:
   InwNode(mesh::Radio& radio, mesh::RNG& rng, mesh::RTCClock& rtc,
           SimpleMeshTables& tables, DataStore& store);
 
   uint32_t sleepBudgetMs(uint32_t now) const; // DM retries and login timeout
+  bool radioWorkPending() const; // includes delayed RX / held packets in the pool
 
   void (*onEvent)(NodeEvent e, const void* arg) = nullptr;
 

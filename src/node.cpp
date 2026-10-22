@@ -40,6 +40,7 @@ extern bool inwBleWanted();
 InwNode::InwNode(mesh::Radio& radio, mesh::RNG& rng, mesh::RTCClock& rtc,
                  SimpleMeshTables& tables, DataStore& store)
     : MyMesh(radio, rng, rtc, tables, store, nullptr), _ds(store) {
+  _idlePacketCount = _mgr->getFreeCount();
   memset(_echo, 0, sizeof(_echo));
   memset(discovered, 0, sizeof(discovered));
   memset(pktLog, 0, sizeof(pktLog));
@@ -148,6 +149,14 @@ bool InwNode::sendDM(const uint8_t* pub, const char* text, uint32_t histId) {
 
 bool InwNode::resendDM(const uint8_t* pub, const char* text, uint32_t histId) {
   return sendDM(pub, text, histId);
+}
+
+bool InwNode::radioWorkPending() const {
+  // MeshCore's hasPendingWork() only covers outgoing packets and dirty contacts.
+  // Delayed incoming / manually held packets also own a slot. Stay awake until
+  // ALL slots are returned, including several packets due on the same loop.
+  return _idlePacketCount <= 0 || MyMesh::hasPendingWork() ||
+         _mgr->getFreeCount() < _idlePacketCount;
 }
 
 uint32_t InwNode::sleepBudgetMs(uint32_t now) const {

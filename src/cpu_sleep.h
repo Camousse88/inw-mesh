@@ -7,7 +7,7 @@ namespace power {
   // All fields are evaluated on the main loop after synchronous background work.
   struct SleepInputs {
     bool screenOff, audio, usb, bluetooth, wifi, gps, meshBusy, radioReady;
-    bool motion, background;
+    bool motion, background, nfc;
     bool imuIrq; // reserved compatibility field; motion never wakes the CPU
     uint32_t deadline; // absolute millis() of earliest application deadline
   };

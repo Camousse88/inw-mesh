@@ -12,6 +12,7 @@
 #include <soc/rtc_cntl_reg.h>
 #include "power.h"
 #include "cpu_sleep.h"
+#include "nfcapp.h"
 #include "sleep_deadline.h"
 #include "battery_schedule.h"
 #include "notify.h"
@@ -2271,11 +2272,11 @@ void loop() {
     s_kbFlashUntil || s_prefsDirtyAt || s_uiDirtyAt || field::wantsGps();
   power::SleepInputs idle{dimmer.asleep(), jingle.playing(), battery.pluggedIn(),
     bleEnabled(), wifi::enabled(), s_gpsRail,
-    g_node && (g_node->hasPendingWork() || !radio_driver.isInRecvMode()), s_radioOk,
-    motion::needsFastPolling(), foreground, motion::irqWatch(), now + deadline.ms()};
+    g_node && (g_node->radioWorkPending() || !radio_driver.isInRecvMode()), s_radioOk,
+    motion::needsFastPolling(), foreground, app::nfcActive(), motion::irqWatch(), now + deadline.ms()};
   const bool candidate = power::lightSleep() && power::cpuSaving() && idle.screenOff &&
     !idle.audio && !idle.bluetooth && !idle.wifi && !idle.gps && idle.radioReady &&
-    !idle.meshBusy && !idle.motion && !idle.background && deadline.ms() >= 2 && now >= 120000;
+    !idle.meshBusy && !idle.motion && !idle.background && !idle.nfc && deadline.ms() >= 2 && now >= 120000;
   bool storeHeld = false;
   if (candidate) {
     idle.usb = battery.pollVbus() || (bool)Serial;
