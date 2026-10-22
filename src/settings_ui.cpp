@@ -1023,7 +1023,7 @@ static void batteryMenu() {
       nav.toast("could not save power setting");
     }
   });
-  m->info("what it does", []() -> String { return String("sleep CPU, keep messages"); });
+  m->info("what it does", []() -> String { return String("Lowers CPU speed and enables light sleep"); });
   nav.push(m);
 }
 

@@ -2,7 +2,7 @@
 
 Settings > Battery > battery saver > **CPU : power saving** is the single
 user-facing control for CPU downclocking and light sleep. Its short description
-is "sleep CPU, keep messages". It turns both existing preferences on/off together;
+is "Lowers CPU speed and enables light sleep". It turns both existing preferences on/off together;
 `inw-cpu/saving` and `inw-cpu/light` are retained for compatibility, including an
 already enabled test9 installation. It is off by default. It is independent of Battery saver:
 enabling it does not change GPS, Bluetooth, Wi-Fi, radio settings or loop delays.
