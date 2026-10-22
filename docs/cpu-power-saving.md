@@ -1,6 +1,6 @@
 # Experimental CPU power saving (T-LoRa Pager)
 
-Settings > Battery > battery saver > **screen-off power saving** is the single
+Settings > Battery > battery saver > **CPU : power saving** is the single
 user-facing control for CPU downclocking and light sleep. Its short description
 is "sleep CPU, keep messages". It turns both existing preferences on/off together;
 `inw-cpu/saving` and `inw-cpu/light` are retained for compatibility, including an
@@ -85,7 +85,7 @@ console. The `cpu` command no longer needs a following `themes` command.
 ## Test9: CPU sleep until an event or scheduled work (experimental)
 
 Test10 replaces the two experimental toggles and diagnostic rows with the
-single **screen-off power saving** toggle, alongside the existing Battery saver.
+single **CPU : power saving** toggle, alongside the existing Battery saver.
 The description is directly below it. USB `cpu`/`motion` diagnostics remain
 available; System already displays the firmware version. Both preferences are
 absent from exported UI backups. An incomplete old pair is shown OFF; enabling

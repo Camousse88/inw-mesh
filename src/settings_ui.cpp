@@ -1007,7 +1007,7 @@ static void batteryMenu() {
   m->adjust("turn on at", []() -> String { return String(ui_settings.saverPct) + "%"; },
             [](int d) { ui_settings.saverPct = constrain(ui_settings.saverPct + d * 5, 5, 50); markUiDirty(); });
   m->info("what it does", []() -> String { return String("gps, bluetooth, wi-fi off, dim screen"); });
-  m->toggle("screen-off power saving", [] {
+  m->toggle("CPU : power saving", [] {
     return power::cpuSaving() && power::lightSleep();
   }, [] {
     const bool wasCpu = power::cpuSaving(), wasSleep = power::lightSleep();
