@@ -70,6 +70,7 @@ public:
           SimpleMeshTables& tables, DataStore& store);
 
   uint32_t sleepBudgetMs(uint32_t now) const; // DM retries and login timeout
+  uint8_t radioSleepBlock() const; // 0 idle, 1 invalid pool, 2 TX queue, 3 allocated packet
   bool radioWorkPending() const; // includes delayed RX / held packets in the pool
 
   void (*onEvent)(NodeEvent e, const void* arg) = nullptr;

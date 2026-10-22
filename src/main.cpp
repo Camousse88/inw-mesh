@@ -2286,9 +2286,14 @@ void loop() {
   const bool foreground = !s_panelOff || backlight.fading() || nav.overlayActive() ||
     s_kbFlashUntil || s_prefsDirtyAt || s_uiDirtyAt || field::wantsGps();
   power::sleepDiagnosticContext(foregroundReason);
+  const uint8_t meshBlock = g_node ? g_node->radioSleepBlock() : 0;
+  const bool radioReceiving = radio_driver.isInRecvMode();
+  power::sleepDiagnosticMeshContext(meshBlock == 1 ? SleepReason::MeshPoolInvalid :
+    meshBlock == 2 ? SleepReason::MeshTxQueue : meshBlock == 3 ? SleepReason::MeshAllocated :
+    SleepReason::RadioNotRx);
   power::SleepInputs idle{dimmer.asleep(), jingle.playing(), battery.pluggedIn(),
     bleEnabled(), wifi::enabled(), s_gpsRail,
-    g_node && (g_node->radioWorkPending() || !radio_driver.isInRecvMode()), s_radioOk,
+    g_node && (meshBlock != 0 || !radioReceiving), s_radioOk,
     motion::needsFastPolling(), foreground, app::nfcActive(), motion::irqWatch(), now + deadline.ms()};
   const bool candidate = power::lightSleep() && power::cpuSaving() && idle.screenOff &&
     !idle.audio && !idle.bluetooth && !idle.wifi && !idle.gps && idle.radioReady &&

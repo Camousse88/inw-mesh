@@ -491,6 +491,19 @@ def patch_datastore(src):
     return src
 
 
+def patch_sleep_deadline(src):
+    # Keep hasPendingWork's existing meaning for every official caller. Publish
+    # its private contacts deadline to the app on the same main-loop thread.
+    old = ("bool MyMesh::hasPendingWork() const {\n"
+           "  return _mgr->getOutboundTotal() > 0 || dirty_contacts_expiry != 0;\n}")
+    new = ("bool MyMesh::hasPendingWork() const {\n"
+           "  inwNoteContactSaveDeadline(dirty_contacts_expiry);\n"
+           "  return _mgr->getOutboundTotal() > 0 || dirty_contacts_expiry != 0;\n}")
+    if src.count(old) != 1:
+        raise SystemExit("patch_meshcore.py: contacts sleep deadline hook did not apply")
+    return src.replace(old, new)
+
+
 def patch_mymesh(src):
     # Two kinds of contact change. Routine churn - a known node's advert, a new
     # path to someone, a sync_since bump - happens every few seconds on a busy
@@ -584,8 +597,9 @@ def patch_mymesh(src):
     if not src.startswith(old):
         raise SystemExit("patch_meshcore.py: MyMesh.cpp includes changed upstream, patch did not apply")
     src = old + ("void inwAppFrame(bool on);   // INW: src/node.cpp\n"
+                 "void inwNoteContactSaveDeadline(unsigned long at);   // INW: sleep scheduler\n"
                  "double inwLocLat(); double inwLocLon();   // INW: src/main.cpp, rounded position\n") + src[len(old):]
-    return src
+    return patch_sleep_deadline(src)
 
 
 def make_middleware(fname, fn):

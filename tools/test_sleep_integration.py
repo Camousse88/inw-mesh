@@ -50,6 +50,24 @@ def function(path, signature):
 
 node_ctor = function('src/node.cpp', 'InwNode::InwNode(')
 node_work = function('src/node.cpp', 'bool InwNode::radioWorkPending() const')
+node_block = function('src/node.cpp', 'uint8_t InwNode::radioSleepBlock() const')
+node_budget = function('src/node.cpp', 'uint32_t InwNode::sleepBudgetMs(uint32_t now) const')
+node_deadline_hook = function('src/node.cpp', 'void inwNoteContactSaveDeadline(')
+# Execute the actual production transform without running PlatformIO's Import.
+patch_ast = ast.parse((ROOT / 'tools/patch_meshcore.py').read_text())
+patch_func = next(n for n in patch_ast.body if isinstance(n, ast.FunctionDef)
+                  and n.name == 'patch_sleep_deadline')
+patch_ns = {}
+exec(compile(ast.Module(body=[patch_func],type_ignores=[]),'<sleep deadline patch>','exec'),patch_ns)
+original_work = ("bool MyMesh::hasPendingWork() const {\n"
+                 "  return _mgr->getOutboundTotal() > 0 || dirty_contacts_expiry != 0;\n}")
+patched_work = patch_ns['patch_sleep_deadline'](original_work)
+try:
+    patch_ns['patch_sleep_deadline']('upstream changed')
+except SystemExit:
+    pass
+else:
+    raise AssertionError('Changed upstream must fail closed')
 nfc_active = function('src/nfcapp.cpp', 'bool app::nfcActive()')
 FILES['test.cpp'] = r'''#include <Arduino.h>
 #include <Wire.h>
@@ -60,6 +78,7 @@ FILES['test.cpp'] = r'''#include <Arduino.h>
 #include <driver/gpio.h>
 #include "cpu_sleep.h"
 #include "battery_schedule.h"
+#include "sleep_deadline.h"
 #include "nfcapp.h"
 #define private public
 #include "battery.h"
@@ -71,23 +90,33 @@ namespace power {
 }
 namespace mesh { struct Radio {}; struct RNG {}; struct RTCClock {}; }
 struct SimpleMeshTables {}; struct DataStore {};
-struct Pool { int freeCount=16; int getFreeCount() const { return freeCount; } } pool;
+struct Pool {
+ int freeCount=16, outbound=0;
+ int getFreeCount() const { return freeCount; }
+ int getOutboundTotal() const { return outbound; }
+} pool;
+void inwNoteContactSaveDeadline(unsigned long at);
+static uint32_t s_contactSaveAt=0;
 class MyMesh { public:
  Pool* _mgr=&pool;
- bool outboundOrDirty=false;
+ unsigned long dirty_contacts_expiry=0;
  MyMesh(mesh::Radio&,mesh::RNG&,mesh::RTCClock&,SimpleMeshTables&,DataStore&,void*) {}
- bool hasPendingWork() const { return outboundOrDirty; }
+ bool hasPendingWork() const;
 };
 class InwNode : public MyMesh { public:
  int _idlePacketCount=0;
  DataStore& _ds;
  int _echo[1],discovered[1],pktLog[1],cliLog[1];
  InwNode(mesh::Radio&,mesh::RNG&,mesh::RTCClock&,SimpleMeshTables&,DataStore&);
+ struct Pending { bool used=false; uint32_t deadline=0; } _pending[2];
+ int _loginState=0; uint32_t _loginDeadline=0;
  bool radioWorkPending() const;
+ uint8_t radioSleepBlock() const;
+ uint32_t sleepBudgetMs(uint32_t now) const;
 };
 enum class Mode { Off,Read,Write,Emulate };
 Mode s_mode=Mode::Off;
-''' + node_ctor + '\n' + node_work + '\n' + nfc_active + r'''
+''' + patched_work + '\n' + node_deadline_hook + '\n' + node_ctor + '\n' + node_block + '\n' + node_work + '\n' + node_budget + '\n' + nfc_active + r'''
 Battery batteryAt(uint32_t start,bool drift=false) {
  Battery b;
  b._w=&Wire; b._gauge=true; b._haveReading=true;
@@ -152,16 +181,42 @@ int main() {
  }
  pool.freeCount=16; idle.meshBusy=node.radioWorkPending();
  assert(!idle.meshBusy && power::idleLightSleep(idle) && calls==1);
- node.outboundOrDirty=true; assert(node.radioWorkPending()); node.outboundOrDirty=false;
+ pool.outbound=1; assert(node.radioWorkPending()); pool.outbound=0;
+ // A pending contacts save is a wake deadline, not a reason to stay awake.
+ // Query the real patched MyMesh method through the production node budget.
+ node.dirty_contacts_expiry=now+20*60*1000;
+ assert(node.hasPendingWork() && !node.radioWorkPending());
+ assert(node.sleepBudgetMs(now)==30000);
+ idle.deadline=now+node.sleepBudgetMs(now);
+ assert(power::idleLightSleep(idle) && calls==2);
+ node.dirty_contacts_expiry=now+1234;
+ assert(node.sleepBudgetMs(now)==1234);
+ idle.deadline=now+node.sleepBudgetMs(now);
+ assert(power::idleLightSleep(idle) && timerUs==1234000 && calls==3);
+ node.dirty_contacts_expiry=now;
+ assert(node.sleepBudgetMs(now)==0);
+ idle.deadline=now+node.sleepBudgetMs(now);
+ assert(!power::idleLightSleep(idle) && calls==3);
+ node.dirty_contacts_expiry=now-1; assert(node.sleepBudgetMs(now)==0);
+ // Cleared and moved deadlines must not remain cached.
+ node.dirty_contacts_expiry=0; assert(node.sleepBudgetMs(now)==30000);
+ node._pending[0]={true,now+321}; assert(node.sleepBudgetMs(now)==321);
+ node._pending[0].used=false;
+ node._loginState=1; node._loginDeadline=now+456;
+ assert(node.sleepBudgetMs(now)==456); node._loginState=0;
+ node.dirty_contacts_expiry=0x20;
+ assert(node.sleepBudgetMs(0xfffffff0)==48);
+ node.dirty_contacts_expiry=0;
+ idle.deadline=now+30000;
  node._idlePacketCount=0; assert(node.radioWorkPending()); node._idlePacketCount=16;
  // Test every real NFC mode against the actual light-sleep gate, then close it.
  for(Mode mode : {Mode::Read,Mode::Write,Mode::Emulate}) {
   s_mode=mode; idle.nfc=app::nfcActive();
-  assert(idle.nfc && !power::idleLightSleep(idle) && calls==1);
+  assert(idle.nfc && !power::idleLightSleep(idle) && calls==3);
   assert(std::strcmp(power::lightSleepStatus(),"NFC active")==0);
  }
  s_mode=Mode::Off; idle.nfc=app::nfcActive();
- assert(!idle.nfc && power::idleLightSleep(idle) && calls==2);
+ assert(!idle.nfc && power::idleLightSleep(idle) && calls==4);
  std::printf("Battery model/time/critical window, allocated radio packets and NFC sleep guards: passed\n");
 }
 '''

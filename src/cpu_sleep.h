@@ -7,10 +7,11 @@ namespace power {
     Input, GpsWork, WifiWork, RadioWork, UiTick, Draw, Effects, StorageWork, Scheduling,
     Sleeping, Off, CpuOff, Error, ScreenOn, Boot, Usb, Audio, Bluetooth, Wifi, Gps,
     Motion, Nfc, Background, Panel, Fade, Overlay, KeyboardEffect, PrefsSave, UiSave,
-    Field, StoreQueue, Deadline, RadioNotReady, Mesh, RadioIrq, Button, Clock, Count
+    Field, StoreQueue, Deadline, RadioNotReady, Mesh, RadioIrq, Button, Clock, MeshPoolInvalid, MeshTxQueue, MeshAllocated, RadioNotRx, Count
   };
   void sleepDiagnosticPhase(SleepReason reason, bool screenOff);
   void sleepDiagnosticContext(SleepReason background);
+  void sleepDiagnosticMeshContext(SleepReason mesh);
   void resetSleepDiagnostics(bool screenOff);
   void printSleepDiagnostics();
   uint64_t sleepDiagnosticMicros(SleepReason reason);

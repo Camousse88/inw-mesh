@@ -25,14 +25,15 @@ namespace {
     "panel not asleep", "backlight fading", "notification/overlay", "keyboard effect",
     "preferences pending", "UI settings pending", "field tool/GPS", "storage queue/busy",
     "scheduled work due", "radio not ready", "mesh busy", "radio IRQ pending",
-    "middle button held", "80 MHz unavailable"
+    "middle button held", "80 MHz unavailable", "mesh: invalid pool baseline",
+    "mesh: outbound queue", "mesh: allocated RX/TX packet", "radio: not in receive mode"
   };
   static_assert(sizeof(reasonNames)/sizeof(*reasonNames) == reasonCount, "diagnostic labels");
   uint64_t s_darkUs[reasonCount] = {}, s_litUs = 0;
   uint32_t s_hits[reasonCount] = {}, s_timerWakes = 0, s_gpioWakes = 0, s_otherWakes = 0;
   int64_t s_accountAt = 0, s_windowAt = 0;
   bool s_tracking = false, s_dark = false;
-  SleepReason s_reason = SleepReason::Scheduling, s_background = SleepReason::Background;
+  SleepReason s_reason = SleepReason::Scheduling, s_background = SleepReason::Background, s_mesh = SleepReason::Mesh;
   void account() {
     const int64_t now = esp_timer_get_time();
     if (s_tracking && now >= s_accountAt) {
@@ -56,6 +57,7 @@ namespace {
 }
 void sleepDiagnosticPhase(SleepReason reason, bool screenOff) { phase(reason, screenOff); }
 void sleepDiagnosticContext(SleepReason background) { s_background = background; }
+void sleepDiagnosticMeshContext(SleepReason mesh) { s_mesh = mesh; }
 uint64_t sleepDiagnosticMicros(SleepReason reason) { account(); return s_darkUs[(unsigned)reason]; }
 void resetSleepDiagnostics(bool screenOff) {
   for (unsigned i=0; i<reasonCount; ++i) { s_darkUs[i]=0; s_hits[i]=0; }
@@ -123,7 +125,7 @@ bool idleLightSleep(const SleepInputs& in) {
     in.audio ? R::Audio : in.bluetooth ? R::Bluetooth :
     in.wifi ? R::Wifi : in.gps ? R::Gps :
     in.motion ? R::Motion : in.nfc ? R::Nfc : in.background ? s_background :
-    budgetMs < 2 ? R::Deadline : !in.radioReady ? R::RadioNotReady : in.meshBusy ? R::Mesh : R::Count;
+    budgetMs < 2 ? R::Deadline : !in.radioReady ? R::RadioNotReady : in.meshBusy ? s_mesh : R::Count;
   if (reason != R::Count) return blocked(reason, in.screenOff);
   if (digitalRead(PIN_LORA_DIO1) == HIGH) return blocked(R::RadioIrq, in.screenOff);
   if (digitalRead(PIN_BUTTON) == LOW) return blocked(R::Button, in.screenOff);

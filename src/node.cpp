@@ -25,6 +25,10 @@
 #define CTL_DISCOVER_RESP 0x90
 
 InwNode* g_node = nullptr;
+// MyMesh publishes its private deadline when queried on the main-loop thread.
+// Refresh it immediately before building the sleep budget; never use stale data.
+static uint32_t s_contactSaveAt = 0;
+void inwNoteContactSaveDeadline(unsigned long at) { s_contactSaveAt = (uint32_t)at; }
 DataStore g_store(SPIFFS, rtc_clock);
 MultiSerialInterface g_ifaces;
 static SerialBLEInterface g_ble;
@@ -151,16 +155,23 @@ bool InwNode::resendDM(const uint8_t* pub, const char* text, uint32_t histId) {
   return sendDM(pub, text, histId);
 }
 
+uint8_t InwNode::radioSleepBlock() const {
+  if (_idlePacketCount <= 0) return 1;
+  if (_mgr->getOutboundTotal() > 0) return 2;
+  if (_mgr->getFreeCount() < _idlePacketCount) return 3;
+  return 0;
+}
+
 bool InwNode::radioWorkPending() const {
-  // MeshCore's hasPendingWork() only covers outgoing packets and dirty contacts.
-  // Delayed incoming / manually held packets also own a slot. Stay awake until
-  // ALL slots are returned, including several packets due on the same loop.
-  return _idlePacketCount <= 0 || MyMesh::hasPendingWork() ||
-         _mgr->getFreeCount() < _idlePacketCount;
+  // Only real packets block sleep. A future contacts save is a wake deadline.
+  // Allocated slots still cover delayed RX and in-flight TX, not just queues.
+  return radioSleepBlock() != 0;
 }
 
 uint32_t InwNode::sleepBudgetMs(uint32_t now) const {
   SleepDeadline next(now);
+  (void)MyMesh::hasPendingWork(); // synchronously refresh s_contactSaveAt
+  if (s_contactSaveAt) next.at(s_contactSaveAt);
   for (const auto& p : _pending) if (p.used) next.at(p.deadline);
   if (_loginState == 1) next.at(_loginDeadline);
   return next.ms();

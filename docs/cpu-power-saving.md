@@ -46,7 +46,7 @@ official OTA URL or signing keys, so an official update can replace the test bui
 
 ### MeshCore web flasher / Custom Firmware
 
-Use **SquatchMesh-1.2.14-cpu-test12-Pager-merged.bin**, not the application-only
+Use **SquatchMesh-1.2.14-cpu-test13-Pager-merged.bin**, not the application-only
 file, for a full install. The merged image includes the 16 MB bootloader,
 partition table, blank OTA-selection data (selecting app0), and the application.
 It also covers NVS with blank bytes: back up settings and identity first.
@@ -55,7 +55,7 @@ selects a full erase with a warning. This wipes on-device identity, contacts,
 settings and messages; export/SD backup is required if they need to be kept.
 An application-only image at 0x10000 does not switch a device booting app1 to
 app0, and cannot boot an erased device. Never erase when flashing an app-only file.
-Check Settings > System > version for `1.2.14-cpu-test12` after installing.
+Check Settings > System > version for `1.2.14-cpu-test13` after installing.
 
 ### Hardware validation
 
@@ -272,3 +272,32 @@ All counters are RAM-only: no periodic logging, flash writes or new wakeups.
 A high blocked-idle bucket identifies the first guard preventing sleep. A high
 work bucket identifies the loop stage consuming awake time. A high sleep share
 with excessive battery-side draw instead calls for hardware/current measurements.
+
+
+## Test13: allow sleep before a deferred contacts save
+
+Test12 hardware diagnostics found 64.3% of screen-off time blocked by `mesh busy`.
+Code review identifies a definite overly broad guard: hasPendingWork combines real
+outbound packets with dirty_contacts_expiry, which official SquatchMesh batches
+for 2 minutes after edits and 20 minutes after routine adverts/path changes.
+Keeping the CPU awake throughout those future waits is unnecessary. The capture
+cannot prove which subcondition accounts for every measured blocked second.
+
+The existing build-time MyMesh.cpp patch now publishes dirty_contacts_expiry via
+inwNoteContactSaveDeadline when hasPendingWork is queried. Its return value and
+all official callers retain their meaning. InwNode refreshes this deadline
+synchronously while building each sleep budget; due work blocks sleep and future
+work caps sleep at the exact save deadline (also capped by the usual 30 seconds).
+Actual background writes retain their queue lock across sleep entry. No save is
+forced early, skipped or rescheduled. No smaller periodic polling is introduced.
+The radio guard still blocks outgoing packets, missing pool slots (including
+inbound delays / TX in flight), and non-RX radio states. Diagnostics distinguish
+these three radio/pool reasons plus an invalid pool baseline. CPU clock, input
+wake sources, motion/quiet-face-down policy and all other guards are unchanged.
+
+Host regression exercises the production patch hook and node methods: a contacts
+save 20 minutes in the future permits 30 seconds of sleep; a nearer deadline
+shortens sleep; due and overdue saves prevent it; moved/cleared deadlines refresh
+immediately; unsigned millis wrap works. Existing allocated-packet and outbound
+queue tests remain. Hardware verification must confirm saves occur normally,
+RX/TX and audio still work, and mesh blocking decreases before claiming a gain.
