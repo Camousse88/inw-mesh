@@ -123,6 +123,10 @@ int main() {
  }
  auto b=batteryAt(1000); now=31000; assert(b.tick(now,30000)); assert(b.percent()==14);
  assert(!b.tick(32000,30000)); // no hidden extra gauge polling
+ // Keep fractional elapsed time across irregular readings / screen transitions.
+ auto irregular=batteryAt(1000);
+ for(uint32_t time=6500;time<=56000;time+=5500) { now=time; assert(irregular.tick(now,5500)); }
+ assert(irregular.percent()==9); // 55 s = eleven model ticks, not ten readings
  // Critical shutdown confirmation keeps the same 60 s window; sampling may
  // delay seeing the threshold by <= one 30 s reading, never by sixfold smoothing.
  const auto fastCritical=criticalAt(5000),slowCritical=criticalAt(30000);

@@ -83,7 +83,9 @@ public:
         // The original model advances every 5 s. Run its math (not I2C reads)
         // once per elapsed model tick, so a 30 s reading advances six ticks.
         // Bound catch-up after unusually long stalls to keep work predictable.
-        uint32_t modelTicks = _last ? (now - _last) / REFRESH_MS : 1;
+        const uint64_t modelMs = _last ? (uint64_t)(now - _last) + _modelRemainder : REFRESH_MS;
+        uint32_t modelTicks = modelMs / REFRESH_MS;
+        _modelRemainder = modelMs % REFRESH_MS;
         if (modelTicks < 1) modelTicks = 1;
         if (modelTicks > 100) modelTicks = 100;
         _last = now;
@@ -388,5 +390,5 @@ private:
     bool     _mahKnown = false, _ccValid = false;
     uint16_t _ccLast = 0;
     int      _restMv = 0;
-    uint32_t _last = 0, _lastDump = 0;
+    uint32_t _last = 0, _lastDump = 0, _modelRemainder = 0;
 };
