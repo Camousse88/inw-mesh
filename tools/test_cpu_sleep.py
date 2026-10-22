@@ -183,6 +183,41 @@ int main() {
   jobs.at(999); assert(jobs.ms()==0);
   SleepDeadline wrap(0xfffffff0); wrap.after(0xfffffff0,100); assert(wrap.ms()==100);
   wrap.at(0xffffffe0); assert(wrap.ms()==0);
+  // Diagnostic accounting measures elapsed time, not loop counts. Separate
+  // real work, the first blocking guard, actual sleep, and screen-on time.
+  now=200000; idle.deadline=now+30000; assert(setLightSleep(true));
+  resetSleepDiagnostics(true);
+  clockUs+=1000;
+  sleepDiagnosticPhase(SleepReason::Draw,true);
+  clockUs+=2000;
+  auto overlay=idle; overlay.background=true;
+  sleepDiagnosticContext(SleepReason::Overlay);
+  assert(!idleLightSleep(overlay));
+  clockUs+=30000;
+  sleepDiagnosticPhase(SleepReason::Input,true);
+  assert(sleepDiagnosticMicros(SleepReason::Input)==1000);
+  assert(sleepDiagnosticMicros(SleepReason::Draw)==2000);
+  assert(sleepDiagnosticMicros(SleepReason::Overlay)==30000);
+  // USB takes precedence over an overlay and is not charged to that overlay.
+  overlay.usb=true; assert(!idleLightSleep(overlay)); clockUs+=7000;
+  sleepDiagnosticPhase(SleepReason::Input,false); clockUs+=1000000;
+  assert(sleepDiagnosticMicros(SleepReason::Usb)==7000);
+  assert(sleepDiagnosticMicros(SleepReason::Input)==1000);
+  sleepDiagnosticPhase(SleepReason::Scheduling,true);
+  injectedRadio=false; assert(idleLightSleep(idle));
+  assert(sleepDiagnosticMicros(SleepReason::Sleeping)==30000000);
+  assert(lightSleepCount()==1 && lightSleepMicros()==30000000);
+  printSleepDiagnostics();
+  result=99; assert(!idleLightSleep(idle));
+  assert(sleepDiagnosticMicros(SleepReason::Sleeping)==30000000);
+  assert(sleepDiagnosticMicros(SleepReason::Error)==30000000);
+  resetSleepDiagnostics(true);
+  assert(lightSleepCount()==0 && lightSleepMicros()==0);
+  assert(sleepDiagnosticMicros(SleepReason::Sleeping)==0);
+  const int before=calls; assert(!idleLightSleep(idle) && calls==before);
+  assert(setLightSleep(true)); result=0;
+  assert(idleLightSleep(idle)); // Only the existing option clears failure.
+
 }
 ''',
 }

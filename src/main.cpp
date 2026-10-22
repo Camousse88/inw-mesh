@@ -870,6 +870,11 @@ static void usbCommands() {
                     g_node ? g_node->getNumContacts() : -1);
       continue;
     }
+    if (!strcmp(line, "cpu reset")) {
+      power::resetSleepDiagnostics(dimmer.asleep());
+      Serial.printf("[diag] counters reset; unplug USB, test, reconnect without reboot, then cpu\r\n");
+      continue;
+    }
     if (!strcmp(line, "cpu")) {
       Serial.printf("[cpu] saving=%d clock=%lu MHz screen=%s\r\n", power::cpuSaving() ? 1 : 0,
                     (unsigned long)power::cpuClockMhz(), dimmer.asleep() ? "off" : "on");
@@ -881,6 +886,7 @@ static void usbCommands() {
       Serial.printf("[sleep] last_ms=%lu max_ms=%lu\r\n",
                     (unsigned long)power::lightSleepLastMs(), (unsigned long)power::lightSleepMaxMs());
       motion::debugPrint();
+      power::printSleepDiagnostics();
       continue;
     }
     // The browser installer sends this before it resets the pager, so nothing
@@ -1990,12 +1996,16 @@ static void autoAdvertTick() {
 }
 
 void loop() {
+  power::sleepDiagnosticPhase(power::SleepReason::Input, dimmer.asleep());
   // Anything that holds the loop long enough to feel like a freeze gets logged
   // with where the time went.
   const uint32_t tLoop = millis();
   uint32_t lapAt = tLoop;
   uint16_t laps[8] = {};
-  auto lap = [&](uint8_t i) { const uint32_t now = millis(); laps[i] = now - lapAt; lapAt = now; };
+  auto lap = [&](uint8_t i) {
+    const uint32_t now = millis(); laps[i] = now - lapAt; lapAt = now;
+    power::sleepDiagnosticPhase(static_cast<power::SleepReason>(i + 1), dimmer.asleep());
+  };
   const int8_t detents = rotary.takeDetents();
   const bool press = rotary.takePress();
   bool backspace = false, anyKey = false;
@@ -2268,8 +2278,14 @@ void loop() {
     deadline.limit(1800000UL - now % 1800000UL); // next GPS window
   if (s_hizUntil) deadline.at(s_hizUntil + 1);
   if (g_shotAt) deadline.at(g_shotAt);
+  using SleepReason = power::SleepReason;
+  const SleepReason foregroundReason = !s_panelOff ? SleepReason::Panel :
+    backlight.fading() ? SleepReason::Fade : nav.overlayActive() ? SleepReason::Overlay :
+    s_kbFlashUntil ? SleepReason::KeyboardEffect : s_prefsDirtyAt ? SleepReason::PrefsSave :
+    s_uiDirtyAt ? SleepReason::UiSave : field::wantsGps() ? SleepReason::Field : SleepReason::Background;
   const bool foreground = !s_panelOff || backlight.fading() || nav.overlayActive() ||
     s_kbFlashUntil || s_prefsDirtyAt || s_uiDirtyAt || field::wantsGps();
+  power::sleepDiagnosticContext(foregroundReason);
   power::SleepInputs idle{dimmer.asleep(), jingle.playing(), battery.pluggedIn(),
     bleEnabled(), wifi::enabled(), s_gpsRail,
     g_node && (g_node->radioWorkPending() || !radio_driver.isInRecvMode()), s_radioOk,
@@ -2282,7 +2298,10 @@ void loop() {
     idle.usb = battery.pollVbus() || (bool)Serial;
     if (!idle.usb) {
       idle.bluetooth = !blePrepareLightSleep();
-      if (!idle.bluetooth) { storeHeld = inwStoreBeginSleep(); idle.background = !storeHeld; }
+      if (!idle.bluetooth) {
+        storeHeld = inwStoreBeginSleep(); idle.background = !storeHeld;
+        if (!storeHeld) power::sleepDiagnosticContext(SleepReason::StoreQueue);
+      }
     }
   }
   const bool slept = power::idleLightSleep(idle);

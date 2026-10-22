@@ -2,6 +2,18 @@
 #include <Arduino.h>
 
 namespace power {
+  // Diagnostic time accounting only; never changes the sleep policy.
+  enum class SleepReason : uint8_t {
+    Input, GpsWork, WifiWork, RadioWork, UiTick, Draw, Effects, StorageWork, Scheduling,
+    Sleeping, Off, CpuOff, Error, ScreenOn, Boot, Usb, Audio, Bluetooth, Wifi, Gps,
+    Motion, Nfc, Background, Panel, Fade, Overlay, KeyboardEffect, PrefsSave, UiSave,
+    Field, StoreQueue, Deadline, RadioNotReady, Mesh, RadioIrq, Button, Clock, Count
+  };
+  void sleepDiagnosticPhase(SleepReason reason, bool screenOff);
+  void sleepDiagnosticContext(SleepReason background);
+  void resetSleepDiagnostics(bool screenOff);
+  void printSleepDiagnostics();
+  uint64_t sleepDiagnosticMicros(SleepReason reason);
   bool lightSleep();
   bool setLightSleep(bool on);
   // All fields are evaluated on the main loop after synchronous background work.

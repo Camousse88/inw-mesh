@@ -46,7 +46,7 @@ official OTA URL or signing keys, so an official update can replace the test bui
 
 ### MeshCore web flasher / Custom Firmware
 
-Use **SquatchMesh-1.2.14-cpu-test11-Pager-merged.bin**, not the application-only
+Use **SquatchMesh-1.2.14-cpu-test12-Pager-merged.bin**, not the application-only
 file, for a full install. The merged image includes the 16 MB bootloader,
 partition table, blank OTA-selection data (selecting app0), and the application.
 It also covers NVS with blank bytes: back up settings and identity first.
@@ -55,7 +55,7 @@ selects a full erase with a warning. This wipes on-device identity, contacts,
 settings and messages; export/SD backup is required if they need to be kept.
 An application-only image at 0x10000 does not switch a device booting app1 to
 app0, and cannot boot an erased device. Never erase when flashing an app-only file.
-Check Settings > System > version for `1.2.14-cpu-test11` after installing.
+Check Settings > System > version for `1.2.14-cpu-test12` after installing.
 
 ### Hardware validation
 
@@ -244,3 +244,31 @@ read/write/emulation and closing, and the no-NFC stub. It does not establish
 hardware radio/NFC reliability. On the Pager, verify delayed flood reception
 with a nonzero RX delay base, NFC phone taps while dark with automatic locking
 disabled, closing the NFC page then resuming sleep, and a normal battery discharge.
+
+
+## Test12: diagnose time spent awake
+
+No power policy, wake source, clock, radio or peripheral setting is changed.
+USB `cpu` adds a diagnostic window, screen-on/off durations, sleep percentage of
+screen-off time, and mutually exclusive time buckets. Blocked idle time is
+attributed to the FIRST blocking guard, with separate panel/fade/overlay/settings/
+field/storage buckets; simultaneous lower-priority guards are not counted twice.
+Loop work is measured separately in eight existing loop phases plus scheduling,
+so slow drawing, sensors/radio or storage cannot masquerade as blocked idle time.
+Screen state is sampled at phase boundaries; a transition inside a phase can
+misattribute that one phase's duration. Times include sleep entry/exit overhead.
+Wake counts distinguish timer/GPIO/other; GPIO IRQ vs button is not inferred.
+All counters are RAM-only: no periodic logging, flash writes or new wakeups.
+
+1. Over raw USB serial, send `cpu reset` (CRLF). This resets only diagnostic and
+   sleep counters, not preferences or a latched sleep failure.
+2. Unplug USB, leave the screen off and the Pager face down for a known period.
+3. Reconnect without rebooting and send `cpu`. USB/screen-on time appears
+   separately; `sleep_pct_dark` uses actual observed screen-off time, not time
+   since boot. Capture the entire diagnostic output. Connecting USB may reset
+   some serial setups: a tiny window/counters then means the measurement was lost.
+4. Do not use the phone's Bluetooth CLI. Rebooting clears the counters.
+
+A high blocked-idle bucket identifies the first guard preventing sleep. A high
+work bucket identifies the loop stage consuming awake time. A high sleep share
+with excessive battery-side draw instead calls for hardware/current measurements.
