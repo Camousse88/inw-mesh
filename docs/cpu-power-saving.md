@@ -46,7 +46,7 @@ official OTA URL or signing keys, so an official update can replace the test bui
 
 ### MeshCore web flasher / Custom Firmware
 
-Use **SquatchMesh-1.2.14-cpu-test14-Pager-merged.bin**, not the application-only
+Use **SquatchMesh-1.2.15-cpu-test14-Pager-merged.bin**, not the application-only
 file, for a full install. The merged image includes the 16 MB bootloader,
 partition table, blank OTA-selection data (selecting app0), and the application.
 It also covers NVS with blank bytes: back up settings and identity first.
@@ -55,7 +55,7 @@ selects a full erase with a warning. This wipes on-device identity, contacts,
 settings and messages; export/SD backup is required if they need to be kept.
 An application-only image at 0x10000 does not switch a device booting app1 to
 app0, and cannot boot an erased device. Never erase when flashing an app-only file.
-Check Settings > System > version for `1.2.14-cpu-test14` after installing.
+Check Settings > System > version for `1.2.15-cpu-test14` after installing.
 
 ### Hardware validation
 
@@ -354,3 +354,23 @@ rail voltages or current. Verify both notification sound and vibration at 80 MHz
 the manual-sleep/turn test in both directions, repeated NFC open/close/read/write/
 emulation, and GPS OFF after erase/restore without a second reboot. Measure
 battery-side current or a matched discharge curve before claiming a power gain.
+
+
+## Alignment with official SquatchMesh 1.2.15
+
+Base: release tag v1.2.15, commit 37dd6ebb6fe0a358aff818d18193c2e6438f4373.
+This retains the test14 power policy; the firmware reports 1.2.15-cpu-test14.
+The official delta from our 1.2.14 base changes only platformio.ini (version)
+and src/history.cpp (whole-history writes in 16 KiB pieces with failure logs).
+The version conflict is resolved by keeping the upstream version and our test
+suffix. History is taken unchanged from the release.
+
+The history rewrite remains synchronous, invoked by startup rescue and compact
+on the loop task. CPU sleep occurs only after loop work returns, so no sleep is
+inserted between these chunks. The existing queued-storage guard and shared SPI
+bus remain unchanged. No new timer, wake source, peripheral power rule, radio
+queue/deadline change or notification path is introduced by this release.
+The five host suites check the CPU policy, sleep guards/deadlines, motion and
+manual-sleep face-down regression, battery integration and peripheral recovery.
+A complete NFC-enabled Pager build validates integration with the release.
+Hardware reception, notifications, NFC and consumption still need device testing.
