@@ -617,19 +617,6 @@ void gpsPower(bool on) {
   else expander.digitalWrite(EXP_GPS_EN, LOW);
 }
 
-void inwNfcPower(bool on) {
-  if (on) {
-    digitalWrite(PIN_NFC_CS, HIGH);
-    pinMode(PIN_NFC_CS, OUTPUT);
-    expander.enableRail(EXP_NFC_EN, 20);
-  } else {
-    // Release CS while the peripheral is unpowered, as in LilyGo's sleep path.
-    pinMode(PIN_NFC_CS, OPEN_DRAIN);
-    digitalWrite(PIN_NFC_CS, HIGH);
-    expander.digitalWrite(EXP_NFC_EN, LOW);
-  }
-}
-
 // GPS draws ~25 mA, more than the rest of the pager put together once the screen
 // is off, and it used to stay on around the clock. Keep it on while the screen is
 // on; with the screen off, give it a two-minute window every half hour so the
@@ -898,6 +885,7 @@ static void usbCommands() {
                     (unsigned long)power::lightSleepLastMs(), (unsigned long)power::lightSleepMaxMs());
       motion::debugPrint();
       power::printSleepDiagnostics();
+      app::nfcPowerDebug();
       uint8_t railOut[2] = {}, railCfg[2] = {};
       const bool railsRead = expander.regs(railOut, railCfg);
       Serial.printf("[peripherals] gps_setting=%d gps_rail_requested=%d nfc_rail_requested=%d haptic_standby=%d codec_sleep=%d expander_ok=%d out=%02X%02X cfg=%02X%02X\r\n",
@@ -2283,7 +2271,7 @@ void loop() {
   // Motion only blocks sleep during sampling bursts or its explicit fallback.
   const bool peripheralSaving = power::lightSleep() && power::cpuSaving() && dimmer.asleep();
   haptic.idlePower(peripheralSaving);
-  app::nfcIdlePower(peripheralSaving);
+  app::nfcIdlePower();
   const uint32_t now = millis();
   SleepDeadline deadline(now);
   deadline.limit(battery.sleepBudgetMs(now, batteryIntervalMs(

@@ -46,7 +46,7 @@ official OTA URL or signing keys, so an official update can replace the test bui
 
 ### MeshCore web flasher / Custom Firmware
 
-Use **SquatchMesh-1.2.15-cpu-test14-Pager-merged.bin**, not the application-only
+Use **SquatchMesh-1.2.15-cpu-test15-Pager-merged.bin**, not the application-only
 file, for a full install. The merged image includes the 16 MB bootloader,
 partition table, blank OTA-selection data (selecting app0), and the application.
 It also covers NVS with blank bytes: back up settings and identity first.
@@ -55,7 +55,7 @@ selects a full erase with a warning. This wipes on-device identity, contacts,
 settings and messages; export/SD backup is required if they need to be kept.
 An application-only image at 0x10000 does not switch a device booting app1 to
 app0, and cannot boot an erased device. Never erase when flashing an app-only file.
-Check Settings > System > version for `1.2.15-cpu-test14` after installing.
+Check Settings > System > version for `1.2.15-cpu-test15` after installing.
 
 ### Hardware validation
 
@@ -359,7 +359,7 @@ battery-side current or a matched discharge curve before claiming a power gain.
 ## Alignment with official SquatchMesh 1.2.15
 
 Base: release tag v1.2.15, commit 37dd6ebb6fe0a358aff818d18193c2e6438f4373.
-This retains the test14 power policy; the firmware reports 1.2.15-cpu-test14.
+This retains the test14 power policy; the firmware reports 1.2.15-cpu-test15.
 The official delta from our 1.2.14 base changes only platformio.ini (version)
 and src/history.cpp (whole-history writes in 16 KiB pieces with failure logs).
 The version conflict is resolved by keeping the upstream version and our test
@@ -374,3 +374,50 @@ The five host suites check the CPU policy, sleep guards/deadlines, motion and
 manual-sleep face-down regression, battery integration and peripheral recovery.
 A complete NFC-enabled Pager build validates integration with the release.
 Hardware reception, notifications, NFC and consumption still need device testing.
+
+
+## Test15: independent NFC power saving, supply always on
+
+Settings > Battery > battery saver adds **NFC : power saving** and the description
+**Puts unused NFC into standby**, directly below the CPU option, in the full NFC
+build only. Its own opt-in NVS preference is inw-nfc/saving (default OFF); like
+the CPU preference it is not in the ordinary UI settings backup. Activate both
+options explicitly for the new battery test. CPU policy/guards, motion, panel
+commands, animations and shared SPI host setup remain identical to test14.
+
+This supersedes test14's NFC rail shutdown: neither option ever cuts EXP_NFC_EN
+or floats NFC CS now. Supply and inactive CS remain high, including while CPU
+light sleep and screen wake/rendering occur. NFC saving is independent of CPU
+saving and screen state: whenever there is no active NFC session, it enters the
+ST25R3916 internal Power-down mode and stays there until needed. With the option
+OFF, original idle RFAL behavior is retained; disabling it after standby resumes
+normal RFAL initialization. Active reading/writing/emulating sessions are never
+interrupted by either setting, and still block CPU light sleep.
+
+The pinned RFAL v1.0.0 deinitialize explicitly keeps OSC on. Therefore after
+RFAL deinit (mask IRQs, detach ISR) the firmware disables MCU/LF clock outputs
+in IO_CONF1, preserving unrelated bits, then writes OP_CONTROL=0 to disable the
+oscillator, RF RX/TX, field detection and wake-up mode. It verifies OP_CONTROL=0,
+clock bits and a valid ST25R3916/3916B identity before marking standby. All chip
+access uses RFAL's existing SPI transactions; no SPI begin/end/reset is added.
+A fresh RFAL initialization reattaches IRQ on each subsequent NFC session.
+
+An init/write/readback failure is latched and reported, not endlessly retried.
+Toggling the NFC setting or opening an NFC page permits another attempt. No new
+wake source, deadline, recurring register read or polling task is added. USB cpu
+adds [nfc] saving/standby/state and cached last op/io readback (not live current).
+The datasheet's ~0.8 uA typical applies to the NFC chip under its stated conditions,
+not a measured board current. Verify standby, actual NFC operation and whole-board
+consumption on the device before claiming that value has been achieved.
+
+Host tests cover persisted opt-in and rejected writes, CPU/screen independence,
+all NFC modes, old-page destructor protection, oscillator-off despite RFAL deinit,
+upper IO bits preserved, read/write/identity failures (including zero/FF), bounded
+retries, disable/re-enable recovery and no-NFC stubs. The panel recovery/reset
+experiment was deferred and is NOT part of this version. This controlled change
+is intended to test whether eliminating NFC supply cycling removes the screen
+bug; its electrical root cause and resolution still require hardware confirmation.
+
+References: ST25R3916 DS12484 Rev8, sections 4.1/4.2 and Table121;
+RFAL v1.0.0 commit f0b22770e509efcbcaa7c5ebf8fd3f04796a14f3,
+rfalDeinitialize(), st25r3916Deinitialize(), OP_CONTROL and IO_CONF1 definitions.

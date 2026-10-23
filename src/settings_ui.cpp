@@ -20,6 +20,7 @@
 #include "regional.h"
 #include "regions.h"
 #include "motion.h"
+#include "nfcapp.h"
 #include <algorithm>
 #include <SPIFFS.h>
 #include <SD.h>
@@ -1024,6 +1025,12 @@ static void batteryMenu() {
     }
   });
   m->info("what it does", []() -> String { return String("Lowers CPU speed and enables light sleep"); });
+#if defined(INW_NFC) && INW_NFC
+  m->toggle("NFC : power saving", [] { return app::nfcPowerSaving(); }, [] {
+    if (!app::setNfcPowerSaving(!app::nfcPowerSaving())) nav.toast("could not save NFC power setting");
+  });
+  m->info("what it does", []() -> String { return String("Puts unused NFC into standby"); });
+#endif
   nav.push(m);
 }
 

@@ -232,7 +232,7 @@ with tempfile.TemporaryDirectory(prefix='sleep-integration-') as directory:
                     str(temp / 'test.cpp'), '-o', str(binary)], check=True)
     subprocess.run([str(binary)], check=True)
     # The public/no-NFC build must not require linking nfcapp.cpp.
-    (temp / 'no_nfc.cpp').write_text('#include "nfcapp.h"\nint main() { return app::nfcActive(); }\n')
+    (temp / 'no_nfc.cpp').write_text('#include "nfcapp.h"\nint main() { app::nfcIdlePower(); app::nfcPowerDebug(); return app::nfcActive() || app::nfcPowerSaving() || app::setNfcPowerSaving(true) || !app::nfcRailRequested(); }\n')
     subprocess.run(['g++', '-std=c++17', f'-I{ROOT / "src"}', str(temp / 'no_nfc.cpp'),
                     '-o', str(temp / 'no-nfc')], check=True)
     subprocess.run([str(temp / 'no-nfc')], check=True)
