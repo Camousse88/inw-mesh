@@ -30,6 +30,7 @@ bool alertReading = false, alertFaceDown = false;
 uint32_t alertReadMs = 0;
 const char* alertStatus = "not checked";
 uint8_t alertSamples = 0;
+uint32_t alertStartedAt = 0, alertAcceptedAt = 0;
 float alertX = 0, alertY = 0, alertZ = 0;
 
 
@@ -99,9 +100,12 @@ void sample(const Vec& a) {
     // Startup samples may be zero, unsettled or belong to an old orientation.
     // Require a NEW consecutive stable run; one bad sample must not poison all
     // later valid samples in the same read. Never reuse a cached quiet result.
-    if (!valid) alertSamples = 0;
-    else if (alertSamples && dx * dx + dy * dy + dz * dz > 0.08f * 0.08f) alertSamples = 1;
-    else if (alertSamples < 3) ++alertSamples;
+    if (now - alertStartedAt < 120 || !valid) alertSamples = 0;
+    else if (!alertSamples || dx * dx + dy * dy + dz * dz > 0.08f * 0.08f) {
+      alertSamples = 1; alertAcceptedAt = now;
+    } else if (now - alertAcceptedAt >= 30 && alertSamples < 3) {
+      ++alertSamples; alertAcceptedAt = now;
+    }
     alertX = a.x; alertY = a.y; alertZ = a.z;
   }
   if (now - lastSample > 3000) movedAt = now;    // after a gap, count stillness afresh
@@ -347,8 +351,18 @@ bool irqWatch() { return false; }
 const char* sleepState() { return pauseStatus; }
 uint32_t eventCount() { return 0; }
 
-void refreshForAlert() {
-  if (!quietOn || saverOn || !screenPaused) return;
+void refreshForAlert(bool screenOff) {
+  if (!quietOn || saverOn || manMin) return;
+  const bool savingOff = screenOff && power::lightSleep() && power::cpuSaving();
+  if (!screenPaused && !savingOff) return;
+  // A message can arrive just after the middle button darkens the screen,
+  // before tick() has paused the sensor. Pause/drain this path too.
+  if (streaming && !pauseSampling()) {
+    face = faceTiming = false;
+    alertStatus = "sample stop failed"; alertReadMs = 0;
+    return;
+  }
+  imu.update(); // discard stopped-stream FIFO data with its callback removed
   // Never use a cached pose: it may have changed while the host was asleep.
   face = faceTiming = false;
   screenPaused = false;
@@ -364,6 +378,8 @@ void refreshForAlert() {
   alertFaceDown = false;
   alertReading = true;
   const uint32_t start = millis();
+  alertStartedAt = start; alertAcceptedAt = start;
+  // Ignore the first 120 ms and never accept a burst as three fresh readings.
   // A cold sensor restart can exceed 180 ms. Finish as soon as three consecutive
   // stable readings arrive; allow at most 500 ms including settling.
   // This runs only for an alert, at 80 MHz while dark, never on a motion IRQ.

@@ -17,7 +17,7 @@ namespace motion {
   bool irqWatch();             // always false: no motion wake source
   const char* sleepState();
   uint32_t eventCount();
-  void refreshForAlert();       // fresh orientation before quiet-face-down decision
+  void refreshForAlert(bool screenOff = true);       // fresh orientation before quiet-face-down decision
   bool needsFastPolling();     // sampling, stop failure or man-down
   bool running();              // samples are coming in
   const char* state();         // "on", "off" or "not responding", for the menus and the log

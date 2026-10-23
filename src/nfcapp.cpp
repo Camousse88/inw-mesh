@@ -18,6 +18,8 @@
 #include "haptic.h"
 #include "board_pins.h"
 
+extern void inwNfcPower(bool on); // main.cpp owns the expander
+
 // ---- hardware -----------------------------------------------------------------------------
 namespace {
 
@@ -27,6 +29,7 @@ RfalRfST25R3916Class* s_rf = nullptr;
 RfalNfcClass* s_nfc = nullptr;
 NdefClass* s_ndef = nullptr;
 bool s_ready = false, s_failed = false;
+bool s_powered = true; // bringup powers the rail; only this module changes it
 Mode s_mode = Mode::Off;
 uint32_t s_session = 0;         // which screen's start() is live
 rfalNfcDiscoverParam s_disc;
@@ -59,6 +62,7 @@ uint16_t s_ceReads = 0;
 // A failed start is not remembered: the next screen that opens tries again, so
 // one bad moment on the shared bus doesn't leave NFC dead until a restart.
 bool ensureInit() {
+  if (!s_powered) { inwNfcPower(true); s_powered = true; }
   if (s_ready) return true;
   if (!s_rf) {
     s_rf = new RfalRfST25R3916Class(&inw_spi, PIN_NFC_CS, PIN_NFC_INT);
@@ -437,6 +441,21 @@ String channelLink(int idx) {
 }  // namespace
 
 bool app::nfcActive() { return s_mode != Mode::Off; }
+bool app::nfcRailRequested() { return s_powered; }
+void app::nfcIdlePower(bool saving) {
+  if (s_mode != Mode::Off) return; // Preserve read/write/emulate, even under lock.
+  if (saving && s_powered) {
+    // FieldOff alone leaves the oscillator on. Deinit also detaches the ISR;
+    // Initialize reattaches it on the next NFC session.
+    if (s_rf && (s_ready || s_failed)) s_rf->rfalDeinitialize();
+    s_ready = false;
+    inwNfcPower(false);
+    s_powered = false;
+  } else if (!saving && !s_powered) {
+    inwNfcPower(true); s_powered = true;
+    // No eager initialization: ensureInit() performs it when a page opens.
+  }
+}
 
 // ---- screens ------------------------------------------------------------------------------------
 class NfcReadView : public View {

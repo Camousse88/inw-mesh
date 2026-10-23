@@ -617,19 +617,30 @@ void gpsPower(bool on) {
   else expander.digitalWrite(EXP_GPS_EN, LOW);
 }
 
+void inwNfcPower(bool on) {
+  if (on) {
+    digitalWrite(PIN_NFC_CS, HIGH);
+    pinMode(PIN_NFC_CS, OUTPUT);
+    expander.enableRail(EXP_NFC_EN, 20);
+  } else {
+    // Release CS while the peripheral is unpowered, as in LilyGo's sleep path.
+    pinMode(PIN_NFC_CS, OPEN_DRAIN);
+    digitalWrite(PIN_NFC_CS, HIGH);
+    expander.digitalWrite(EXP_NFC_EN, LOW);
+  }
+}
+
 // GPS draws ~25 mA, more than the rest of the pager put together once the screen
 // is off, and it used to stay on around the clock. Keep it on while the screen is
 // on; with the screen off, give it a two-minute window every half hour so the
 // clock and the advert position stay fresh.
 static void gpsSchedule() {
-  // Range test, SOS and the trail need a live position whatever the settings say.
-  // When the last of them stops, hand the rail back to the normal rules.
-  static bool fieldHad = false;
-  if (field::wantsGps()) { fieldHad = true; gpsPower(true); return; }
-  if (fieldHad) { fieldHad = false; if (!ui_settings.gpsOn || power::saver()) gpsPower(false); }
-  if (!ui_settings.gpsOn || power::saver()) return;   // those paths switch it themselves
+  // Reconcile the rail every loop, including after settings are restored.
+  // Field tools preserve their original override of the ordinary GPS setting.
   const bool window = millis() % 1800000UL < 120000UL;
-  gpsPower(!dimmer.asleep() || window);
+  const bool want = field::wantsGps() ||
+    (ui_settings.gpsOn && !power::saver() && (!dimmer.asleep() || window));
+  gpsPower(want);
 }
 
 // ---- alerts ------------------------------------------------------------------------------------
@@ -650,7 +661,7 @@ static void alert(const char* title, const char* text, AlertKind kind, bool sile
   const Jingle* sound = kind == AlertKind::Dm ? th.dm : kind == AlertKind::Mention ? th.mention : th.msg;
   const VibePattern& vibe = kind == AlertKind::Dm ? th.vibeDm : kind == AlertKind::Mention ? th.vibeMention : th.vibeMsg;
   // Face down on a table (with that setting on): no light, no sound, no buzz.
-  motion::refreshForAlert();
+  motion::refreshForAlert(dimmer.asleep());
   const bool faceDown = motion::faceDown();
   if (ui_settings.wakeOnMessage && !silent && !faceDown) dimmer.wake();
   nav.banner(title, text);
@@ -887,6 +898,11 @@ static void usbCommands() {
                     (unsigned long)power::lightSleepLastMs(), (unsigned long)power::lightSleepMaxMs());
       motion::debugPrint();
       power::printSleepDiagnostics();
+      uint8_t railOut[2] = {}, railCfg[2] = {};
+      const bool railsRead = expander.regs(railOut, railCfg);
+      Serial.printf("[peripherals] gps_setting=%d gps_rail_requested=%d nfc_rail_requested=%d haptic_standby=%d codec_sleep=%d expander_ok=%d out=%02X%02X cfg=%02X%02X\r\n",
+        ui_settings.gpsOn, s_gpsRail, app::nfcRailRequested(), haptic.standby(), codec.sleeping(),
+        railsRead, railOut[1], railOut[0], railCfg[1], railCfg[0]);
       continue;
     }
     // The browser installer sends this before it resets the pager, so nothing
@@ -1849,6 +1865,7 @@ void setup() {
       app::applyTheme();
       app::applyDisplay();
       app::applySound();
+      gpsPower(ui_settings.gpsOn && !power::saver());
       dimmer.setFull(ui_settings.brightness);
       keyboard.setBacklight(ui_settings.kbBacklight);
       logs.add(LOG_WARN, "settings were empty, restored from %s", from);
@@ -2264,6 +2281,9 @@ void loop() {
   power::updateCpu(dimmer.asleep());
   // Keep the original screen-wake policy above: no keyboard/wheel wake here.
   // Motion only blocks sleep during sampling bursts or its explicit fallback.
+  const bool peripheralSaving = power::lightSleep() && power::cpuSaving() && dimmer.asleep();
+  haptic.idlePower(peripheralSaving);
+  app::nfcIdlePower(peripheralSaving);
   const uint32_t now = millis();
   SleepDeadline deadline(now);
   deadline.limit(battery.sleepBudgetMs(now, batteryIntervalMs(

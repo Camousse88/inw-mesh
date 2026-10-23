@@ -62,6 +62,8 @@ inline void bhy2_parse_xyz(const uint8_t* p,bhy2_data_xyz* v) { std::memcpy(v,p,
 inline bool tiltSupported=true,sigSupported=true,rejectEvents=false,rejectStop=false,rejectResume=false,stuckIrq=false;
 inline bool deliverSamples=true;
 inline bool restartArtifacts=false;
+inline bool staleBurst=false;
+inline bhy2_data_xyz stalePose{0,0,4096};
 inline unsigned starts=0, rawUpdates=0;
 inline uint32_t rawStarted=0;
 inline float rates[256]={};
@@ -114,6 +116,12 @@ public:
       callbacks[id](id,nullptr,0,nullptr,nullptr);
     }
     imuLevel=stuckIrq ? 1 : 0;
+    // The stopped/resumed FIFO can still deliver a burst of old orientation.
+    if (staleBurst && rates[4]>0 && callbacks[4]) {
+      staleBurst=false;
+      for(int i=0;i<3;++i)
+        callbacks[4](4,reinterpret_cast<const uint8_t*>(&stalePose),sizeof(stalePose),nullptr,nullptr);
+    }
     if (deliverSamples && rates[4]>0 && callbacks[4] && millis()-lastRaw>=40) {
       // A restart may need >180 ms and produce invalid initial readings.
       if (restartArtifacts && starts>=4 && millis()-rawStarted<240) return;
@@ -154,6 +162,24 @@ int main(int argc,char** argv) {
     return 0;
   }
   assert(!motion::needsFastPolling() && rates[4]==0 && !motion::irqWatch());
+  if(scenario=="turn-after-sleep") {
+    // Observe face up while lit, press middle to sleep, then turn face down.
+    motion::setQuietFaceDown(true);
+    pose={0,0,4096}; frames(60,false);
+    motion::tick(true);
+    assert(!motion::needsFastPolling());
+    pose={0,0,-4096}; stalePose={0,0,4096}; staleBurst=true;
+    motion::refreshForAlert(); assert(motion::faceDown());
+    // Also reject a stale face-down FIFO burst after turning face up.
+    pose={0,0,4096}; stalePose={0,0,-4096}; staleBurst=true;
+    motion::refreshForAlert(); assert(!motion::faceDown());
+    // Message races the middle-button sleep, before the first dark tick.
+    pose={0,0,4096}; frames(30,false);
+    pose={0,0,-4096}; stalePose={0,0,4096}; staleBurst=true;
+    motion::refreshForAlert(true);
+    assert(motion::faceDown() && rates[4]==0 && !motion::takeRaise());
+    return 0;
+  }
   // Walking for ten minutes, including a permanently asserted sensor IRQ,
   // must neither resume sampling nor raise the screen.
   for(int i=0;i<15000;++i) {
@@ -232,6 +258,6 @@ with tempfile.TemporaryDirectory(prefix='motion-sleep-test-') as directory:
     subprocess.run(['g++','-std=c++17','-Wall','-Wextra','-Werror',
                     f'-I{temp}',f'-I{ROOT / "src"}',str(temp/'motion.cpp'),
                     str(temp/'motion_test.cpp'),'-o',str(binary)],check=True)
-    for scenario in ('normal','stop'):
+    for scenario in ('normal','stop','turn-after-sleep'):
         subprocess.run([str(binary),scenario],check=True)
         print(f'Motion sleep {scenario}: passed')

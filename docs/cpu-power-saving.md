@@ -46,7 +46,7 @@ official OTA URL or signing keys, so an official update can replace the test bui
 
 ### MeshCore web flasher / Custom Firmware
 
-Use **SquatchMesh-1.2.14-cpu-test13-Pager-merged.bin**, not the application-only
+Use **SquatchMesh-1.2.14-cpu-test14-Pager-merged.bin**, not the application-only
 file, for a full install. The merged image includes the 16 MB bootloader,
 partition table, blank OTA-selection data (selecting app0), and the application.
 It also covers NVS with blank bytes: back up settings and identity first.
@@ -55,7 +55,7 @@ selects a full erase with a warning. This wipes on-device identity, contacts,
 settings and messages; export/SD backup is required if they need to be kept.
 An application-only image at 0x10000 does not switch a device booting app1 to
 app0, and cannot boot an erased device. Never erase when flashing an app-only file.
-Check Settings > System > version for `1.2.14-cpu-test13` after installing.
+Check Settings > System > version for `1.2.14-cpu-test14` after installing.
 
 ### Hardware validation
 
@@ -301,3 +301,56 @@ shortens sleep; due and overdue saves prevent it; moved/cleared deadlines refres
 immediately; unsigned millis wrap works. Existing allocated-packet and outbound
 queue tests remain. Hardware verification must confirm saves occur normally,
 RX/TX and audio still work, and mesh blocking decreases before claiming a gain.
+
+
+## Test14: idle peripherals and fresh face-down alerts
+
+The single CPU : power saving option is unchanged. When both saved CPU flags
+are enabled and the logical screen is off, the full NFC build deinitializes an
+unused NFC instance and cuts EXP_NFC_EN. CS is released with open-drain HIGH,
+following LilyGo's power-down handling. Opening an NFC page powers the rail,
+waits 20 ms, and performs the original fresh RFAL initialization (including ISR
+attachment). Active read/write/emulate sessions remain powered and continue to
+block CPU sleep. Closing a session permits shutdown on the next loop; an old
+page destructor cannot close a newer session. Leaving saving restores the rail
+without eagerly initializing RFAL. The no-NFC build retains its previous rail
+policy and needs no NFC implementation at link time.
+
+The haptic driver enters register standby (MODE=0x40) only after GO reads zero;
+failed reads keep it awake. Its configuration remains stored. A vibration first
+leaves standby and allows 250 us for wakeup. No new timer wake or sleep blocker
+is added: if an effect completes during CPU sleep, standby is deferred until
+an existing radio/timer/button wake permits the next loop check. Checks during
+an otherwise active loop are limited to once per 100 ms. Existing effects,
+patterns, modes, and vibration during screen-off notifications remain available.
+
+The codec uses its established stop register sequence immediately after begin,
+even if no startup sound is selected. It tracks I2S ownership, checks power-up
+register writes, cleans up install/pin/register failures, and makes repeated
+stop safe. The amp policy is unchanged. Initialization/cleanup fixes apply even
+with CPU saving off. No guessed new codec register power sequence is introduced.
+
+GPS scheduling now reconciles its rail with the actual settings on every loop.
+Settings restored from SD after a wiped NVS also apply GPS power immediately.
+This fixes default GPS ON surviving a later restoration of GPS OFF. Field-tool
+GPS overrides and the original 2-minute-per-half-hour off-screen window remain.
+
+A regression simulation reproduces the manual-sleep face-up -> turn-face-down
+symptom using a buffered burst of three old orientation readings. Test13 accepts
+that burst and makes the wrong quiet decision. Test14 drains stopped-stream
+FIFO data before restarting, disregards the first 120 ms, and requires accepted
+stable readings separated by at least 30 ms within the existing 500 ms limit.
+It also covers an alert arriving before the first dark motion tick. The reverse
+turn (face down -> face up), repeated alerts, cold restarts with invalid samples,
+read/stop failures, and the man-down exception are retained in the tests. This
+reproduces a plausible mechanism; it is not a hardware trace of the user's IMU.
+No motion wake, sampling between messages, keyboard/wheel wake or new CPU clock
+exception is introduced. SD, keyboard power, and the IMU supply remain unchanged.
+
+USB cpu additionally prints requested GPS/NFC rail states, haptic standby and
+codec sleep flags, plus the expander output/direction registers read back at the
+instant of the command. These are register/software diagnostics, not measured
+rail voltages or current. Verify both notification sound and vibration at 80 MHz,
+the manual-sleep/turn test in both directions, repeated NFC open/close/read/write/
+emulation, and GPS OFF after erase/restore without a second reboot. Measure
+battery-side current or a matched discharge curve before claiming a power gain.
